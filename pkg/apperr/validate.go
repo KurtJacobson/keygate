@@ -2,8 +2,35 @@ package apperr
 
 import (
 	"net/mail"
+	"regexp"
 	"strings"
+
+	"golang.org/x/mod/semver"
 )
+
+// semverShape: a permissive prefilter to short-circuit obvious garbage
+// before golang.org/x/mod/semver does the strict 2.0 parse (which is
+// what catches leading zeros, empty pre-release identifiers, etc.).
+var semverShape = regexp.MustCompile(
+	`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`,
+)
+
+// ValidateSemver returns nil iff value is a strict SemVer 2.0 version
+// string. Leading zeros (e.g. `01.0.0`), empty pre-release identifiers,
+// and other 2.0 violations are rejected. Empty input is rejected — call
+// sites that allow "no version" must short-circuit before calling.
+func ValidateSemver(value string) *AppError {
+	if value == "" {
+		return &AppError{Status: 400, Code: "INVALID_INPUT", Message: "version is required"}
+	}
+	if len(value) > 64 {
+		return &AppError{Status: 400, Code: "INVALID_INPUT", Message: "version must be at most 64 characters"}
+	}
+	if !semverShape.MatchString(value) || !semver.IsValid("v"+value) {
+		return &AppError{Status: 400, Code: "INVALID_INPUT", Message: "version must be SemVer 2.0 (e.g. 1.2.3 or 1.2.3-beta.1)"}
+	}
+	return nil
+}
 
 func ValidateEmail(email string) *AppError {
 	if email == "" {

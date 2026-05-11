@@ -50,7 +50,15 @@
 
 ### 🔑 许可证管理
 
-一个平台覆盖所有模式 — **订阅制**、**永久买断**、**免费试用**和**浮动许可**（并发）。创建、激活、验证、暂停、恢复和吊销，全程审计追踪。按设备或按用户的激活限制。宽限期。许可证密钥用 SHA-256 哈希存储。HMAC-SHA256 签名 token 支持离线验证。
+一个平台覆盖所有模式 — **订阅制**、**永久买断**、**免费试用**和**浮动许可**（并发）。创建、激活、验证、暂停、恢复和吊销，全程审计追踪。按设备或按用户的激活限制，**原子级强制**（重试不会重复计数）。宽限期。许可证密钥 SHA-256 哈希存储，落盘加密。Ed25519 签名 token 支持离线验证（服务端持私钥,客户端通过 `/license/pubkey` 拿公钥本地验签）。**`Idempotency-Key` 头**支持 — 写入重试永不重复。
+
+公开 SDK 端点（activate / verify / deactivate / usage / download）直接用 `license_key`，无需在二进制里嵌入 API 密钥。客户可在门户自助释放激活槽（丢笔记本不用提工单）。
+
+### 🚀 软件分发
+
+向已安装客户端推送签名更新。**Sparkle**（macOS）、**Velopack**（Windows）和 **Tauri**（跨平台）的自动更新器消费同一份 release 数据 — 一次发布，所有更新器兼容。每个 release 下挂多平台二进制，**原子发布门控**（绝不泄露半上传状态），**yank** 即时回滚。每产品 **Ed25519 签名密钥**，私钥用 AES-256-GCM + HKDF 派生子密钥落盘加密。服务端算 SHA-256（不信客户端哈希）。stable channel 公开访问 — 客户的自动更新器在 license 轮换时绝不中断。每产品 `minimum_supported_version` 强制升级下限。
+
+对象存储兼容 S3 — Cloudflare R2、AWS S3、MinIO 等任何说 SigV4 的存储。Presigned URL 浏览器直传（不经 Keygate 中转），license 校验后短期下载 URL。
 
 ### 📊 用量计量
 
@@ -64,17 +72,21 @@ Stripe 端到端集成，**三层可靠性保障** — Webhook、成功页验证
 
 客户在许可证内管理自己的团队。席位角色（所有者/管理员/成员），每个计划可配置上限。功能权限支持布尔标志、数值限制或用量配额。可购买的附加组件扩展计划能力。
 
+### 🔧 服务端到服务端 API
+
+通过 `Authorization: Bearer kg_live_…` 程序化访问 admin — Stripe webhook 触发后自动建 license、cron 跑用量导出、`/admin/*` 能做的所有事都能自动化。**基于 scope 的鉴权**，默认 fail-closed（空 scope 的 key 什么都不能做）。系统级 admin key 或产品级 key，同 Stripe `sk_live_` 和 GitHub PAT 一类。
+
 ### 📈 管理后台
 
 产品、计划、许可证、客户、API 密钥、Webhook、分析、审计日志、团队管理、邮件模板和品牌自定义 — 全部在一个界面完成。搜索、筛选和导出（CSV/JSON）。
 
 ### 🛡️ 安全
 
-邮箱 OTP 登录（常量时间哈希验证），基于数据库的每次请求角色权限检查，暴力破解防护，速率限制，HMAC 签名 Webhook，SameSite Cookie，HSTS，启动时拒绝弱密钥。
+邮箱 OTP 登录（常量时间哈希验证），基于数据库的每次请求角色权限检查，暴力破解防护，速率限制，HMAC 签名 Webhook，SameSite Cookie，HSTS，启动时拒绝弱密钥。License verify 端点将所有"license-knowable"失败统一为 404，关闭 `license_key` 枚举 oracle。Idempotency-Key 中间件防止重试导致的重复执行。
 
 ### 🌍 自托管
 
-单个 Go 二进制文件 + PostgreSQL。无需 Redis，无需微服务。启动时自动迁移。首次运行有安装向导。支持自定义品牌、邮件模板和国际化（内置中英文）。
+单个 Go 二进制文件 + PostgreSQL +（可选）S3 兼容存储用于 release 二进制。无需 Redis，无需微服务。启动时自动迁移。首次运行有安装向导。支持自定义品牌、邮件模板和国际化（内置中英文）。
 
 <br />
 
@@ -119,10 +131,12 @@ make build && ./bin/keygate
 | 浮动许可 | ✅ | ✅ | ✅ | ✅ |
 | 用量计量 | **✅** | ❌ | ❌ | ❌ |
 | 内置支付 | **✅** | ❌ | ❌ | ❌ |
+| 自动更新分发 | **✅ Sparkle / Velopack / Tauri** | ✅ 付费模块 | ❌ | ❌ |
 | 客户门户 | ✅ | ❌ | ✅ | ✅ |
 | 管理后台 | ✅ | ✅ | ✅ | ✅ |
 | Webhook | ✅ | ✅ | ✅ | ✅ |
 | 审计日志 | ✅ | ✅ | ❌ | ❌ |
+| Idempotency-Key | **✅** | ❌ | ❌ | ❌ |
 | 多语言 | ✅ | ❌ | ❌ | ❌ |
 
 <br />

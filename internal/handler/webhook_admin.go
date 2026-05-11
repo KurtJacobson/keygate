@@ -20,7 +20,20 @@ func NewWebhookAdminHandler(s *store.Store, wh *service.WebhookService) *Webhook
 }
 
 func (h *WebhookAdminHandler) ListWebhooks(c *gin.Context) {
-	webhooks, err := h.Store.ListWebhooks(c, c.Query("product_id"), c.Query("search"))
+	productID := c.Query("product_id")
+	// Auto-narrow for product-scoped api keys (same pattern as
+	// ListLicenses / Release.List).
+	if v, ok := c.Get("api_key"); ok {
+		if ak, ok := v.(*model.APIKey); ok && ak != nil && ak.ProductID != "" {
+			if productID != "" && productID != ak.ProductID {
+				response.Err(c, 403, "PRODUCT_SCOPE_MISMATCH",
+					"api_key is bound to a different product")
+				return
+			}
+			productID = ak.ProductID
+		}
+	}
+	webhooks, err := h.Store.ListWebhooks(c, productID, c.Query("search"))
 	if err != nil {
 		response.Internal(c)
 		return
@@ -50,6 +63,9 @@ func (h *WebhookAdminHandler) CreateWebhook(c *gin.Context) {
 	if req.Secret == "" {
 		req.Secret = service.GenerateWebhookSecret()
 	}
+	if !requireKeyProductScope(c, req.ProductID) {
+		return
+	}
 
 	w := &model.Webhook{
 		ProductID: req.ProductID,
@@ -75,9 +91,8 @@ func (h *WebhookAdminHandler) CreateWebhook(c *gin.Context) {
 }
 
 func (h *WebhookAdminHandler) UpdateWebhook(c *gin.Context) {
-	w, err := h.Store.FindWebhookByID(c, c.Param("id"))
-	if err != nil {
-		response.NotFound(c, "webhook not found")
+	w, ok := h.checkWebhookScope(c, c.Param("id"))
+	if !ok {
 		return
 	}
 
@@ -111,6 +126,9 @@ func (h *WebhookAdminHandler) UpdateWebhook(c *gin.Context) {
 }
 
 func (h *WebhookAdminHandler) DeleteWebhook(c *gin.Context) {
+	if _, ok := h.checkWebhookScope(c, c.Param("id")); !ok {
+		return
+	}
 	if err := h.Store.DeleteWebhook(c, c.Param("id")); err != nil {
 		response.Internal(c)
 		return
@@ -118,9 +136,39 @@ func (h *WebhookAdminHandler) DeleteWebhook(c *gin.Context) {
 	response.NoContent(c)
 }
 
+// checkWebhookScope blocks a product-scoped api_key from reaching
+// webhooks that belong to another product. Same pattern as
+// AdminHandler.checkLicenseScope / ReleaseAdminHandler.checkReleaseScope.
+func (h *WebhookAdminHandler) checkWebhookScope(c *gin.Context, webhookID string) (*model.Webhook, bool) {
+	w, err := h.Store.FindWebhookByID(c, webhookID)
+	if err != nil {
+		response.NotFound(c, "webhook not found")
+		return nil, false
+	}
+	if !requireKeyProductScope(c, w.ProductID) {
+		return nil, false
+	}
+	return w, true
+}
+
 func (h *WebhookAdminHandler) ListDeliveries(c *gin.Context) {
-	deliveries, total, err := h.Store.ListWebhookDeliveries(c, c.Param("id"),
-		queryInt(c, "offset", 0), queryInt(c, "limit", 50))
+	if _, ok := h.checkWebhookScope(c, c.Param("id")); !ok {
+		return
+	}
+	status := c.Query("status")
+	switch status {
+	case "", "pending", "delivered", "failed":
+	default:
+		response.BadRequest(c, "status must be pending, delivered, or failed")
+		return
+	}
+	deliveries, total, err := h.Store.ListWebhookDeliveries(c, store.WebhookDeliveryFilter{
+		WebhookID: c.Param("id"),
+		Status:    status,
+		Event:     c.Query("event"),
+		Offset:    queryInt(c, "offset", 0),
+		Limit:     queryInt(c, "limit", 50),
+	})
 	if err != nil {
 		response.Internal(c)
 		return
@@ -128,10 +176,78 @@ func (h *WebhookAdminHandler) ListDeliveries(c *gin.Context) {
 	response.OK(c, gin.H{"deliveries": deliveries, "total": total})
 }
 
-func (h *WebhookAdminHandler) TestWebhook(c *gin.Context) {
-	w, err := h.Store.FindWebhookByID(c, c.Param("id"))
+// GET /admin/webhooks/:id/deliveries/:delivery_id
+//
+// Detail view used by the admin UI to show the full payload + raw
+// response body for diagnosing a failed delivery.
+func (h *WebhookAdminHandler) GetDelivery(c *gin.Context) {
+	wh, ok := h.checkWebhookScope(c, c.Param("id"))
+	if !ok {
+		return
+	}
+	d, err := h.Store.FindWebhookDeliveryByID(c, c.Param("delivery_id"))
 	if err != nil {
-		response.NotFound(c, "webhook not found")
+		response.NotFound(c, "delivery not found")
+		return
+	}
+	// Cross-check: a delivery row must belong to the webhook ID in
+	// the URL. Without this an admin who knows two webhook IDs +
+	// any delivery ID could pull rows from the wrong tenant.
+	if d.WebhookID != wh.ID {
+		response.NotFound(c, "delivery not found")
+		return
+	}
+	response.OK(c, d)
+}
+
+// POST /admin/webhooks/:id/deliveries/:delivery_id/resend
+//
+// Manual re-fire of a previous delivery. Common during integration:
+// the receiver was down / mis-configured and the admin wants to
+// replay an event without trying to recreate the original action.
+// The replay carries the SAME payload bytes (so receiver-side
+// idempotency keys still match) but a fresh X-Keygate-Delivery and
+// a new row in the deliveries table so retry counters are clean.
+func (h *WebhookAdminHandler) ResendDelivery(c *gin.Context) {
+	wh, ok := h.checkWebhookScope(c, c.Param("id"))
+	if !ok {
+		return
+	}
+	deliveryID := c.Param("delivery_id")
+	orig, err := h.Store.FindWebhookDeliveryByID(c, deliveryID)
+	if err != nil {
+		response.NotFound(c, "delivery not found")
+		return
+	}
+	if orig.WebhookID != wh.ID {
+		response.NotFound(c, "delivery not found")
+		return
+	}
+	fresh, err := h.Webhook.Redispatch(c, deliveryID)
+	if err != nil {
+		if err == service.ErrWebhookDeliveryNotResendable {
+			response.Err(c, 409, "NOT_RESENDABLE",
+				"webhook is deleted or inactive — re-enable it before resending")
+			return
+		}
+		response.Internal(c)
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "webhook_delivery", EntityID: fresh.ID, Action: "resent",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{
+			"original_delivery_id": deliveryID,
+			"webhook_id":           wh.ID,
+			"event":                orig.Event,
+		},
+	})
+	response.Created(c, fresh)
+}
+
+func (h *WebhookAdminHandler) TestWebhook(c *gin.Context) {
+	w, ok := h.checkWebhookScope(c, c.Param("id"))
+	if !ok {
 		return
 	}
 	h.Webhook.Dispatch(c, w.ProductID, "webhook.test", map[string]any{

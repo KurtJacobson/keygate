@@ -10,6 +10,18 @@ const zh = {
   "common.loading": "加载中...",
   "common.noData": "暂无数据",
   "common.confirm": "确认",
+  "common.optional": "可选",
+
+  // 接受邀请落地页
+  "acceptInvite.processing": "正在接受邀请…",
+  "acceptInvite.missingToken": "缺少邀请 token",
+  "acceptInvite.missingTokenDesc": "此 URL 不包含有效邀请 token。请重新打开邮件中的链接。",
+  "acceptInvite.invalidTitle": "邀请无效或已过期",
+  "acceptInvite.invalidDesc": "此邀请已被使用、已被撤销或已过期。请联系团队所有者重新发送。",
+  "acceptInvite.acceptedTitle": "欢迎加入 {product}",
+  "acceptInvite.acceptedDesc": "你已以 {role} 身份加入。登录 portal 即可管理 license 和团队成员。",
+  "acceptInvite.openPortal": "打开 portal",
+  "acceptInvite.goHome": "返回首页",
   "common.actions": "操作",
   "common.status": "状态",
   "common.name": "名称",
@@ -24,11 +36,14 @@ const zh = {
   "common.plan": "方案",
   "common.yes": "是",
   "common.no": "否",
+  "common.unlimited": "无限",
+  "common.unlimitedSymbol": "∞",
 
   // Nav
   "nav.dashboard": "仪表盘",
   "nav.products": "产品管理",
   "nav.plans": "方案管理",
+  "nav.releases": "发布管理",
   "nav.licenses": "许可证管理",
   "nav.apiKeys": "API 密钥",
   "nav.webhooks": "Webhooks",
@@ -75,6 +90,14 @@ const zh = {
   "plans.licenseType": "许可类型",
   "plans.maxActivations": "最大激活数",
   "plans.maxSeats": "最大席位数",
+  "plans.licenseModel": "授权模型",
+  "plans.modelStandard": "标准",
+  "plans.modelFloating": "浮动 (并发)",
+  "plans.floatingTimeout": "浮动会话超时 (分钟)",
+  "plans.hintDesktop": "桌面产品 — 支持设备激活 + 自动更新 feed,席位字段已隐藏。",
+  "plans.hintSaas": "SaaS 产品 — 支持席位与用量计量,激活和 release feed 已隐藏。",
+  "plans.hintHybrid": "混合产品 — 激活、席位、自动更新 feed 全部可用。",
+  "plans.notApplicableForType": "该产品类型不适用",
   "plans.trialDays": "试用天数",
   "plans.graceDays": "宽限天数",
   "plans.billingInterval": "计费周期",
@@ -87,6 +110,11 @@ const zh = {
   "plans.formDesc": "配置方案详细信息。",
   "plans.entitlements": "权益配置",
   "plans.addEntitlement": "添加权益",
+  "plans.deleteEntitlementTitle": "删除 {feature}?",
+  "plans.deleteEntitlementDesc": "此操作会立即从该套餐中移除该权益,所有该套餐的 license 将失去该 feature 的访问权限。",
+  "plans.stripeMeterEventName": "Stripe meter event name(可选)",
+  "plans.stripeMeterEventNameHelp":
+    "启用 Stripe 计量计费。需与你在 Stripe dashboard 配置的 meter 上的 event_name 一致,每次 usage 调用会向该 meter 推送一条事件。",
   "plans.allProducts": "全部产品",
 
   // Licenses
@@ -131,6 +159,18 @@ const zh = {
   "licenses.used": "已使用",
   "licenses.updated": "更新时间",
   "licenses.resetCounter": "重置计数器",
+  "licenses.resetCounterTitle": "重置 {feature} 的用量?",
+  "licenses.resetCounterDesc": "当前计费周期内的累计用量将清零。客户可立即重新消耗完整配额。此操作会写入审计日志。",
+  "licenses.deactivate": "停用",
+  "licenses.invite": "邀请成员",
+  "licenses.inviteTitle": "邀请团队成员",
+  "licenses.inviteDesc": "我们会向该邮箱发送一次性接受链接,链接 7 天后失效。",
+  "licenses.sendInvite": "发送邀请",
+  "licenses.seatInviteSent": "邀请已发送",
+  "licenses.seatCapReached": "席位已满。请先升级套餐或移除未激活成员,再邀请新成员。",
+  "licenses.deactivateTitle": "停用 {device}?",
+  "licenses.deactivateDesc":
+    "该设备将立即失去访问权限。客户可在知道 license key 的任意客户端重新激活(占用一个激活名额)。",
   "licenses.recentEvents": "最近事件",
   "licenses.noUsageEvents": "暂无使用事件。",
   "licenses.quantity": "数量",
@@ -142,7 +182,7 @@ const zh = {
 
   // API Keys
   "apiKeys.title": "API 密钥",
-  "apiKeys.subtitle": "管理产品 SDK 认证的 API 密钥。",
+  "apiKeys.subtitle": "服务端到服务端凭据,按 scope 授权。",
   "apiKeys.new": "新建 API 密钥",
   "apiKeys.prefix": "密钥前缀",
   "apiKeys.lastUsed": "最后使用",
@@ -151,6 +191,19 @@ const zh = {
   "apiKeys.createdDesc": "请立即复制此密钥，之后将无法再次查看。",
   "apiKeys.deleteConfirm": "此操作将立即使该密钥失效。使用该密钥的客户端将停止工作。",
   "apiKeys.noProductsDesc": "请先创建产品，然后再生成 API 密钥。",
+  "apiKeys.scopes": "权限范围",
+  "apiKeys.scopesNone": "未选择任何权限",
+  "apiKeys.lastUsedIP": "来源 IP",
+  "apiKeys.rotate": "轮换",
+  "apiKeys.rotateTitle": "轮换 API 密钥",
+  "apiKeys.rotateConfirm": "当前密钥将立即失效。继续前请先更新所有使用该密钥的客户端。",
+  "apiKeys.scopeAdmin": "管理员(通配)",
+  "apiKeys.scopeAdminDesc": "完整 /admin/* 访问权限。用于运维工具。",
+  "apiKeys.scopeLicensesWrite": "License(写)",
+  "apiKeys.scopeLicensesWriteDesc": "创建、更新、管理 license。用于结账 / 配额后端。",
+  "apiKeys.scopeReleasesWrite": "Release(写)",
+  "apiKeys.scopeReleasesWriteDesc": "推送 release 和 artifact。用于 CI/CD 构建发布。",
+  "apiKeys.atLeastOneScope": "请至少选择一个权限范围。",
 
   // Webhooks
   "webhooks.title": "Webhooks",
@@ -223,6 +276,8 @@ const zh = {
   "audit.filterEntity": "实体类型",
   "audit.allEntities": "全部实体",
   "audit.filterEntityId": "搜索实体 ID",
+  "audit.filterProduct": "产品",
+  "audit.allProducts": "全部产品",
 
   // Users
   "customers.title": "客户管理",
@@ -288,6 +343,9 @@ const zh = {
   "settings.emailTemplates": "邮件模板",
   "settings.editTemplate": "编辑",
   "settings.resetTemplate": "恢复默认",
+  "settings.resetTemplateTitle": "重置 {template} 模板?",
+  "settings.resetTemplateDesc":
+    "你的自定义 HTML 将被替换为内置默认模板。此操作不可撤销 — 如有需要请先复制保存当前 HTML。",
   "settings.templateSaved": "模板已保存。",
   "settings.templateReset": "已恢复默认模板。",
   "settings.templateDesc": "自定义邮件模板。使用 Go 模板语法：{{.Product}}、{{.Plan}}、{{.LicenseKey}} 等。",
@@ -307,6 +365,7 @@ const zh = {
   "settings.saved": "设置已保存。",
   "settings.saveError": "保存设置失败。",
   "settings.testEmailSent": "测试邮件已发送。",
+  "settings.testEmailFailed": "测试邮件发送失败。",
 
   // Pagination
   "pagination.of": "/",
@@ -351,6 +410,9 @@ const zh = {
   "portal.featuresIncluded": "包含功能",
   "portal.teamMembers": "团队成员",
   "portal.addMember": "添加成员",
+  "portal.removeMember": "移除成员",
+  "portal.removeMemberTitle": "移除团队成员?",
+  "portal.removeMemberDesc": "{email} 将立即失去访问权限。之后可重新邀请。",
   "portal.noMembers": "暂无团队成员。",
   "portal.seatLimit": "席位已满。请升级方案以添加更多成员。",
   "portal.inviteDesc": "邀请新成员加入此许可证。",
@@ -408,6 +470,13 @@ const zh = {
   "webhooks.attempts": "尝试次数",
   "webhooks.delivered": "已投递",
   "webhooks.noDeliveries": "暂无投递记录。",
+  "webhooks.deliveriesCount": "条投递",
+  "webhooks.statusAll": "全部",
+  "webhooks.resend": "重发",
+  "webhooks.resendQueued": "重发已加入队列",
+  "webhooks.resendFailed": "重发失败",
+  "webhooks.testQueued": "测试事件已发送",
+  "webhooks.testFailed": "测试发送失败",
 
   // Plans extras
   "plans.subscription": "订阅",
@@ -431,12 +500,18 @@ const zh = {
 
   // Products extras
   "products.desktop": "桌面",
+  "products.desktopDesc": "可安装应用。按设备激活 + 自动更新 feed。",
   "products.saas": "SaaS",
+  "products.saasDesc": "云端服务。按用户席位 + 用量计量。",
   "products.hybrid": "混合",
+  "products.hybridDesc": "云 + 可安装客户端,所有能力可用。",
 
   // Licenses extras
   "licenses.notes": "备注",
   "licenses.notesOptional": "备注（可选）",
+  "licenses.externalCustomerID": "外部 customer ID",
+  "licenses.externalWorkspaceID": "外部 workspace ID",
+  "licenses.externalIDPlaceholder": "可选。商家自己的用户 / 租户 ID。",
 
   // Analytics extras
   "analytics.period": "周期",

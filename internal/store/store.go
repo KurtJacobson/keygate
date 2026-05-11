@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -17,12 +18,18 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 	"github.com/uptrace/bun/driver/pgdriver"
 
+	"github.com/tabloy/keygate/internal/crypto"
 	"github.com/tabloy/keygate/internal/license"
 	"github.com/tabloy/keygate/internal/model"
 )
 
 type Store struct {
 	DB *bun.DB
+	// LicenseKeyAEAD is optional: when set, license keys are AES-GCM
+	// encrypted at rest in license_key_encrypted alongside the plaintext
+	// column. Reads prefer the encrypted column with fallback to plaintext.
+	// nil means encryption is disabled (legacy mode).
+	LicenseKeyAEAD *crypto.AESGCM
 }
 
 func New(dsn string) (*Store, error) {
@@ -312,6 +319,86 @@ func (s *Store) CountOwners(ctx context.Context) (int, error) {
 		Where("role = 'owner'").Count(ctx)
 }
 
+// ErrLastOwner is returned by DemoteOwnerAtomic when the demotion
+// would leave zero owners. Locked-by-design: callers must NOT bypass
+// this check with a raw SetUserRole call from the handler layer.
+var ErrLastOwner = errors.New("cannot remove the last owner")
+
+// DemoteOwnerAtomic locks every owner row in a tx, recounts, and
+// demotes the target only if at least one owner would remain.
+//
+// Why a tx with FOR UPDATE? The original handler did
+//  1. CountOwners()  (no lock)
+//  2. SetUserRole(target, "user")  (separate stmt)
+//
+// Two concurrent demotions of two DIFFERENT owners — when the org
+// has exactly 2 owners — could both pass step 1 (each sees count=2,
+// "OK to remove one"), then both step 2 → zero owners. We've seen
+// this in production-like load testing.
+//
+// FOR UPDATE on the owner rows serialises the two demotions: the
+// second one waits, re-counts after the first has committed (sees
+// count=1), and rejects with ErrLastOwner.
+//
+// targetID may or may not currently be an owner — if it's not, the
+// UPDATE is a no-op (0 rows affected) and we return nil, matching
+// the previous handler-side semantics (caller already verified the
+// target was admin/owner before reaching us).
+func (s *Store) DemoteOwnerAtomic(ctx context.Context, targetID string) error {
+	// Acquire a session-scoped advisory lock OUTSIDE the tx so the
+	// lock is held by the connection itself. Without this, when
+	// bun's pool hands two concurrent calls different connections,
+	// FOR UPDATE on per-row owner locks only serialises demotions
+	// of the SAME target — two demotions of A and B then both
+	// pass count==2 and zero owners remain.
+	//
+	// pg_advisory_lock(N) blocks until acquired. We release it in
+	// a defer; if the process crashes the session ends and Postgres
+	// reaps the lock automatically.
+	conn, err := s.DB.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.NewRaw("SELECT pg_advisory_lock(8675310)").Exec(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.NewRaw("SELECT pg_advisory_unlock(8675310)").Exec(context.Background())
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var ownerCount int
+	if err := tx.NewRaw("SELECT COUNT(*) FROM users WHERE role = 'owner'").Scan(ctx, &ownerCount); err != nil {
+		return err
+	}
+
+	// Determine the target's current role. If they're an owner AND
+	// they're the last one, refuse. If they're admin (not owner) we
+	// can demote freely — the last-owner invariant is unaffected.
+	var targetRole string
+	if err := tx.NewRaw("SELECT role FROM users WHERE id = ?", targetID).Scan(ctx, &targetRole); err != nil {
+		return err
+	}
+	if targetRole == model.RoleOwner && ownerCount <= 1 {
+		return ErrLastOwner
+	}
+
+	if _, err := tx.NewRaw(
+		"UPDATE users SET role = ?, updated_at = now() WHERE id = ?",
+		model.RoleUser, targetID,
+	).Exec(ctx); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 // ─── API Key ───
 
 func HashAPIKey(raw string) string {
@@ -328,20 +415,87 @@ func (s *Store) FindProductByAPIKey(ctx context.Context, keyHash string) (*model
 	if err != nil {
 		return nil, nil, err
 	}
+	return ak.Product, ak, nil
+}
+
+// TouchAPIKey records the most recent successful auth for a key.
+// Fire-and-forget: failure must not block the request. Called from
+// the auth middleware AFTER the request context has the client IP,
+// because the lookup path (FindProductByAPIKey) doesn't see it.
+func (s *Store) TouchAPIKey(id, ip string) {
 	go func() {
 		_, _ = s.DB.NewUpdate().Model((*model.APIKey)(nil)).
-			Set("last_used = now()").Where("id = ?", ak.ID).Exec(context.Background())
+			Set("last_used = now()").
+			Set("last_used_ip = ?", ip).
+			Where("id = ?", id).
+			Exec(context.Background())
 	}()
-	return ak.Product, ak, nil
 }
 
 // ─── License ───
 
-func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
+// DecryptLicenseKey returns the plaintext license key for a row.
+//
+// Read order:
+//  1. If LicenseKeyEncrypted is populated AND the AEAD is configured,
+//     decrypt and return that. Failure logs at WARN + bumps the
+//     LicenseKeyDecryptFailures metric so ops can detect ciphertext
+//     corruption (and, post-Phase C, the empty-result that follows).
+//     We still fall back to plaintext during Phase A/B so a corrupted row
+//     doesn't black-hole the license; Phase C drops the plaintext column,
+//     after which a decrypt failure surfaces as an empty key — which the
+//     metric makes visible.
+//  2. Else return LicenseKey (plaintext column) — used during transition
+//     for un-migrated rows and when encryption is unconfigured.
+//
+// Callers that need to display the key (admin API, customer portal,
+// post-purchase email) MUST go through this path rather than reading
+// model.License.LicenseKey directly. Phase C will null those direct reads.
+func (s *Store) DecryptLicenseKey(l *model.License) string {
+	if l == nil {
+		return ""
+	}
+	if s.LicenseKeyAEAD != nil && len(l.LicenseKeyEncrypted) > 0 {
+		pt, err := s.LicenseKeyAEAD.Decrypt(l.LicenseKeyEncrypted, []byte(l.ID))
+		if err == nil {
+			return string(pt)
+		}
+		slog.Warn("license key decrypt failed; falling back to plaintext column",
+			"license_id", l.ID,
+			"ciphertext_bytes", len(l.LicenseKeyEncrypted),
+			"error", err)
+		// metric bump — observable via /metrics
+		licenseKeyDecryptFailuresInc()
+	}
+	return l.LicenseKey
+}
+
+// prepareLicenseForInsert fills in the derived fields a license needs at
+// insert time: ID, KeyHash, and (when encryption is configured) the
+// AES-GCM ciphertext of the plaintext key bound to the license ID via AAD.
+//
+// Order matters: ID must be assigned BEFORE encryption so the AAD is set.
+// AAD = license.ID prevents an attacker who somehow swaps ciphertext rows
+// from being able to "move" a license key between IDs.
+func (s *Store) prepareLicenseForInsert(l *model.License) error {
 	if l.ID == "" {
 		l.ID = newID()
 	}
 	l.KeyHash = license.HashKey(l.LicenseKey)
+	if s.LicenseKeyAEAD != nil && l.LicenseKey != "" {
+		ct, err := s.LicenseKeyAEAD.Encrypt([]byte(l.LicenseKey), []byte(l.ID))
+		if err != nil {
+			return fmt.Errorf("encrypt license key: %w", err)
+		}
+		l.LicenseKeyEncrypted = ct
+	}
+	return nil
+}
+
+func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
+	if err := s.prepareLicenseForInsert(l); err != nil {
+		return err
+	}
 	_, err := s.DB.NewInsert().Model(l).Exec(ctx)
 	return err
 }
@@ -349,10 +503,9 @@ func (s *Store) CreateLicense(ctx context.Context, l *model.License) error {
 // CreateLicenseWithSubscription creates a license and, for subscription/trial plans,
 // a subscription record in a single transaction to prevent orphan records.
 func (s *Store) CreateLicenseWithSubscription(ctx context.Context, l *model.License, plan *model.Plan) error {
-	if l.ID == "" {
-		l.ID = newID()
+	if err := s.prepareLicenseForInsert(l); err != nil {
+		return err
 	}
-	l.KeyHash = license.HashKey(l.LicenseKey)
 
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -389,6 +542,7 @@ func (s *Store) FindLicenseByKey(ctx context.Context, key string) (*model.Licens
 	keyHash := license.HashKey(key)
 	l := new(model.License)
 	err := s.DB.NewSelect().Model(l).
+		Relation("Product").
 		Relation("Plan").
 		Relation("Plan.Entitlements").
 		Relation("Activations").
@@ -399,6 +553,7 @@ func (s *Store) FindLicenseByKey(ctx context.Context, key string) (*model.Licens
 		// to avoid mixing partial state from the failed hash lookup.
 		l = new(model.License)
 		return l, s.DB.NewSelect().Model(l).
+			Relation("Product").
 			Relation("Plan").
 			Relation("Plan.Entitlements").
 			Relation("Activations").
@@ -490,26 +645,45 @@ func (s *Store) FindActiveLicenseByEmailAndProduct(ctx context.Context, email, p
 	return &lic
 }
 
-func (s *Store) ListLicenses(ctx context.Context, productID, status, search string, offset, limit int) ([]*model.License, int, error) {
+// LicenseListFilter narrows ListLicenses queries. New filters slot
+// in here rather than as positional params so callers (handler +
+// future internal uses) don't have to grow a long argument list.
+type LicenseListFilter struct {
+	ProductID           string
+	Status              string
+	Search              string
+	ExternalCustomerID  string
+	ExternalWorkspaceID string
+	Offset              int
+	Limit               int
+}
+
+func (s *Store) ListLicenses(ctx context.Context, f LicenseListFilter) ([]*model.License, int, error) {
 	q := s.DB.NewSelect().Model((*model.License)(nil)).
 		Relation("Plan").Relation("Product").
 		OrderExpr("license.created_at DESC")
-	if productID != "" {
-		q = q.Where("license.product_id = ?", productID)
+	if f.ProductID != "" {
+		q = q.Where("license.product_id = ?", f.ProductID)
 	}
-	if status != "" {
-		q = q.Where("license.status = ?", status)
+	if f.Status != "" {
+		q = q.Where("license.status = ?", f.Status)
 	}
-	if search != "" {
+	if f.ExternalCustomerID != "" {
+		q = q.Where("license.external_customer_id = ?", f.ExternalCustomerID)
+	}
+	if f.ExternalWorkspaceID != "" {
+		q = q.Where("license.external_workspace_id = ?", f.ExternalWorkspaceID)
+	}
+	if f.Search != "" {
 		// Only search by email and key prefix — never expose full key via wildcard search.
-		q = q.Where("(license.email ILIKE ? OR license.license_key LIKE ?)", "%"+search+"%", search+"%")
+		q = q.Where("(license.email ILIKE ? OR license.license_key LIKE ?)", "%"+f.Search+"%", f.Search+"%")
 	}
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
 	var out []*model.License
-	err = q.Offset(offset).Limit(limit).Scan(ctx, &out)
+	err = q.Offset(f.Offset).Limit(f.Limit).Scan(ctx, &out)
 	return out, total, err
 }
 
@@ -616,12 +790,15 @@ func (s *Store) FindExpiredTrials(ctx context.Context) ([]*model.License, error)
 	return out, err
 }
 
-// FindStalePastDueLicenses returns past_due licenses updated before the threshold.
+// FindStalePastDueLicenses returns past_due licenses whose dunning
+// clock (past_due_at) crossed the threshold. Falls back to
+// updated_at when past_due_at is unset, so legacy rows that pre-date
+// the column don't get stranded.
 func (s *Store) FindStalePastDueLicenses(ctx context.Context, before time.Time) ([]*model.License, error) {
 	var out []*model.License
 	err := s.DB.NewSelect().Model(&out).
 		Where("status = 'past_due'").
-		Where("updated_at < ?", before).
+		Where("COALESCE(past_due_at, updated_at) < ?", before).
 		Scan(ctx)
 	return out, err
 }
@@ -671,12 +848,20 @@ func (s *Store) RecordNotification(ctx context.Context, licenseID, tag string) {
 // ─── Refresh Tokens ───
 
 type RefreshToken struct {
-	ID        string    `bun:"id,pk"`
-	UserID    string    `bun:"user_id,notnull"`
-	TokenHash string    `bun:"token_hash,notnull"`
-	ExpiresAt time.Time `bun:"expires_at,notnull"`
-	CreatedAt time.Time `bun:"created_at,default:now()"`
+	ID        string     `bun:"id,pk"`
+	UserID    string     `bun:"user_id,notnull"`
+	TokenHash string     `bun:"token_hash,notnull"`
+	ExpiresAt time.Time  `bun:"expires_at,notnull"`
+	CreatedAt time.Time  `bun:"created_at,default:now()"`
+	RevokedAt *time.Time `bun:"revoked_at"`
 }
+
+// ErrRefreshTokenReused is returned by RotateRefreshToken when a
+// caller presents a token that has already been rotated (revoked_at
+// is set). This is the security signal — the caller should revoke
+// every refresh_token for the same user, since either the legit user
+// or an attacker holding the captured old token will be cut off.
+var ErrRefreshTokenReused = errors.New("refresh token reuse detected")
 
 func (s *Store) CreateRefreshToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
 	_, err := s.DB.NewRaw(
@@ -686,19 +871,79 @@ func (s *Store) CreateRefreshToken(ctx context.Context, userID, tokenHash string
 	return err
 }
 
+// FindRefreshToken returns an *active* refresh token (not expired,
+// not revoked). Used for read-only checks that don't rotate. The
+// rotation path uses RotateRefreshToken instead, which distinguishes
+// "missing" from "reused".
 func (s *Store) FindRefreshToken(ctx context.Context, tokenHash string) (*RefreshToken, error) {
 	rt := new(RefreshToken)
 	err := s.DB.NewRaw(
-		"SELECT id, user_id, token_hash, expires_at FROM refresh_tokens WHERE token_hash = ? AND expires_at > now()",
+		"SELECT id, user_id, token_hash, expires_at, revoked_at FROM refresh_tokens "+
+			"WHERE token_hash = ? AND expires_at > now() AND revoked_at IS NULL",
 		tokenHash,
 	).Scan(ctx, rt)
 	return rt, err
 }
 
+// RotateRefreshToken atomically marks the token as revoked and
+// returns the row. Distinguishes three outcomes:
+//
+//   - (rt, nil)                    → caller may issue a new token
+//   - (rt, ErrRefreshTokenReused)  → REUSE detected; caller MUST
+//     wipe every refresh_token for rt.UserID. The returned rt
+//     carries the UserID so the caller can do the wipe in one step.
+//   - (nil, sql.ErrNoRows)         → token not found / expired;
+//     plain 401, no family wipe.
+//
+// Implemented as a single UPDATE … RETURNING wrapped in a tx that
+// takes a SELECT FOR UPDATE on the row first. This serialises
+// concurrent rotation attempts of the same token (e.g. two browser
+// tabs both refreshing at once) so exactly one wins.
+func (s *Store) RotateRefreshToken(ctx context.Context, tokenHash string) (*RefreshToken, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	rt := new(RefreshToken)
+	scanErr := tx.NewRaw(
+		"SELECT id, user_id, token_hash, expires_at, revoked_at FROM refresh_tokens "+
+			"WHERE token_hash = ? AND expires_at > now() FOR UPDATE",
+		tokenHash,
+	).Scan(ctx, rt)
+	if scanErr != nil {
+		return nil, scanErr
+	}
+
+	// Already-rotated token replayed → security incident.
+	if rt.RevokedAt != nil {
+		_ = tx.Commit() // commit the FOR UPDATE release — no row change
+		return rt, ErrRefreshTokenReused
+	}
+
+	now := time.Now()
+	if _, err := tx.NewRaw(
+		"UPDATE refresh_tokens SET revoked_at = ? WHERE id = ?",
+		now, rt.ID,
+	).Exec(ctx); err != nil {
+		return nil, err
+	}
+	rt.RevokedAt = &now
+	return rt, tx.Commit()
+}
+
+// DeleteRefreshToken removes a token outright. Used on logout, where
+// we want the token gone immediately rather than just revoked
+// (logout is explicit user intent — no need for reuse-detection
+// state to outlive it).
 func (s *Store) DeleteRefreshToken(ctx context.Context, tokenHash string) {
 	_, _ = s.DB.NewRaw("DELETE FROM refresh_tokens WHERE token_hash = ?", tokenHash).Exec(ctx)
 }
 
+// DeleteUserRefreshTokens wipes every refresh token for a user.
+// Called on reuse detection (security) and on user-requested
+// "log out everywhere".
 func (s *Store) DeleteUserRefreshTokens(ctx context.Context, userID string) {
 	_, _ = s.DB.NewRaw("DELETE FROM refresh_tokens WHERE user_id = ?", userID).Exec(ctx)
 }
@@ -901,4 +1146,108 @@ func (s *Store) BackfillKeyHashes(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// BackfillLicenseKeyEncrypted streams licenses where the encrypted column
+// is NULL and populates it by encrypting the existing plaintext.
+//
+// Concurrency-safe: each UPDATE includes `AND license_key = ?` so a
+// concurrent admin operation that rotates the key invalidates this
+// backfill's update for that row (RowsAffected = 0). The next backfill
+// run will re-process the row with the new plaintext.
+//
+// Idempotent: safe to call repeatedly. Each row is processed in a small
+// SELECT/UPDATE batch (default 100) so the function can run in production
+// without holding long locks. Progress + remaining are logged.
+//
+// No-op when LicenseKeyAEAD is nil (encryption is not configured).
+//
+// Per-row encrypt failures are logged + counted but DON'T abort the run —
+// one bad row shouldn't stop the rest of the backfill. The function
+// returns the count of successfully-encrypted rows, then the next
+// invocation can retry the failures.
+func (s *Store) BackfillLicenseKeyEncrypted(ctx context.Context, logger *slog.Logger) (int, error) {
+	if s.LicenseKeyAEAD == nil {
+		return 0, nil
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	// Initial gauge snapshot so /metrics exposes the starting state.
+	if remaining, err := s.countLicenseKeysUnencrypted(ctx); err == nil {
+		LicenseKeysUnencrypted.Set(float64(remaining))
+		if remaining > 0 {
+			logger.Info("license key backfill starting", "remaining", remaining)
+		}
+	}
+
+	const batchSize = 100
+	total := 0
+	skippedRaces := 0
+	failed := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		var batch []*model.License
+		err := s.DB.NewSelect().Model(&batch).
+			Where("license_key_encrypted IS NULL AND license_key <> ''").
+			Limit(batchSize).
+			Scan(ctx)
+		if err != nil {
+			return total, fmt.Errorf("select batch: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, l := range batch {
+			ct, err := s.LicenseKeyAEAD.Encrypt([]byte(l.LicenseKey), []byte(l.ID))
+			if err != nil {
+				logger.Warn("license key backfill: encrypt failed; skipping",
+					"license_id", l.ID, "error", err)
+				failed++
+				continue
+			}
+			// TOCTOU guard: only update if the plaintext we just encrypted is
+			// still the current plaintext. If an admin rotated the key
+			// between our SELECT and this UPDATE, RowsAffected = 0 and we
+			// skip — the next backfill picks up the new plaintext.
+			res, err := s.DB.NewUpdate().Model((*model.License)(nil)).
+				Set("license_key_encrypted = ?", ct).
+				Where("id = ? AND license_key = ? AND license_key_encrypted IS NULL", l.ID, l.LicenseKey).
+				Exec(ctx)
+			if err != nil {
+				logger.Warn("license key backfill: update failed; skipping",
+					"license_id", l.ID, "error", err)
+				failed++
+				continue
+			}
+			if n, _ := res.RowsAffected(); n == 0 {
+				skippedRaces++
+				continue
+			}
+			total++
+		}
+		logger.Info("license key backfill progress",
+			"encrypted_total", total, "skipped_concurrent", skippedRaces, "failed", failed)
+		// Refresh gauge so ops can watch progress live.
+		if remaining, err := s.countLicenseKeysUnencrypted(ctx); err == nil {
+			LicenseKeysUnencrypted.Set(float64(remaining))
+		}
+		// If batch was full, loop for the next one. Else we're done.
+		if len(batch) < batchSize {
+			break
+		}
+	}
+	return total, nil
+}
+
+// countLicenseKeysUnencrypted returns how many rows still need backfill.
+// Used to drive the LicenseKeysUnencrypted gauge — Phase B should not
+// flip the read path until this metric is 0 for sustained time.
+func (s *Store) countLicenseKeysUnencrypted(ctx context.Context) (int, error) {
+	return s.DB.NewSelect().Model((*model.License)(nil)).
+		Where("license_key_encrypted IS NULL AND license_key <> ''").
+		Count(ctx)
 }

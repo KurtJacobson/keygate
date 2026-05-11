@@ -1,6 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Code, Eye, Mail, Pencil, RotateCcw } from "lucide-react"
 import { useState } from "react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -63,9 +72,17 @@ export default function EmailTemplatesManager() {
     },
   })
 
+  // confirmReset holds the template key pending revert. Reset
+  // discards the admin's custom HTML and falls back to the bundled
+  // default — non-recoverable without an external backup. The
+  // AlertDialog stops a misclick from wiping work.
+  const [confirmReset, setConfirmReset] = useState<string | null>(null)
   const resetMut = useMutation({
     mutationFn: (key: string) => admin.updateSettings({ [`email_template_${key}`]: "" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "email-templates"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "email-templates"] })
+      setConfirmReset(null)
+    },
   })
 
   const templates = data?.templates || {}
@@ -142,8 +159,9 @@ export default function EmailTemplatesManager() {
                           variant="ghost"
                           size="icon"
                           className="h-8 w-8 text-orange-600"
-                          onClick={() => resetMut.mutate(key)}
+                          onClick={() => setConfirmReset(key)}
                           title={t("settings.resetTemplate")}
+                          disabled={resetMut.isPending && resetMut.variables === key}
                         >
                           <RotateCcw className="h-4 w-4" />
                         </Button>
@@ -208,6 +226,28 @@ export default function EmailTemplatesManager() {
           )}
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!confirmReset} onOpenChange={() => setConfirmReset(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("settings.resetTemplateTitle", {
+                template: (confirmReset && TEMPLATE_META[confirmReset]?.label) || "",
+              })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("settings.resetTemplateDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => confirmReset && resetMut.mutate(confirmReset)}
+            >
+              {t("settings.resetTemplate")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

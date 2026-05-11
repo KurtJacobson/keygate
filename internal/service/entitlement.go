@@ -2,14 +2,12 @@ package service
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
 	"strconv"
 	"time"
 
+	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/internal/store"
-	"github.com/tabloy/keygate/pkg/apperr"
 )
 
 type EntitlementService struct {
@@ -47,18 +45,19 @@ type FeatureStatus struct {
 }
 
 func (s *EntitlementService) Check(ctx context.Context, in CheckInput) (*CheckResult, error) {
-	lic, err := s.store.FindLicenseByKey(ctx, in.LicenseKey)
+	// Public SDK endpoint: a 404 for any inaccessible license closes
+	// the existence-oracle. We use usabilityRequired=true so the
+	// suspended/revoked/expired status strings never escape this
+	// service — callers see "not found" instead.
+	lic, err := loadLicenseForSDK(ctx, s.store, in.LicenseKey, in.ProductID, "", true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return nil, apperr.Internal(err)
-	}
-	if in.ProductID != "" && lic.ProductID != in.ProductID {
-		return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		return nil, err
 	}
 
-	licensed := lic.Status == "active" || lic.Status == "trialing"
+	// Only "active" or "trialing" reach this point. The status field
+	// is kept in the response for SDK clients that key off it, but
+	// it can never reveal a sensitive lifecycle state — those have
+	// already been folded into the 404 above.
 	planName := ""
 	planID := ""
 	if lic.Plan != nil {
@@ -67,18 +66,24 @@ func (s *EntitlementService) Check(ctx context.Context, in CheckInput) (*CheckRe
 	}
 
 	result := &CheckResult{
-		Licensed: licensed,
+		Licensed: true,
 		Status:   lic.Status,
 		PlanID:   planID,
 		PlanName: planName,
 		Features: make(map[string]FeatureStatus),
 	}
 
-	if lic.Plan == nil || lic.Plan.Entitlements == nil {
-		return result, nil
+	// Plan entitlements (may be absent if Plan has none or was unloaded).
+	// We do NOT early-return when the plan is bare: addons attached to
+	// the license can still extend it with their own features. Skipping
+	// this block lost the addon-merge step for plans with no built-in
+	// entitlements — a real bug that surfaced after plan changes.
+	var planEntitlements []*model.Entitlement
+	if lic.Plan != nil {
+		planEntitlements = lic.Plan.Entitlements
 	}
 
-	for _, e := range lic.Plan.Entitlements {
+	for _, e := range planEntitlements {
 		if in.Feature != "" && e.Feature != in.Feature {
 			continue
 		}

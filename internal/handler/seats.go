@@ -27,11 +27,13 @@ func (h *SeatHandler) AddSeat(c *gin.Context) {
 	}
 
 	productID, _ := c.Get("product_id")
+	actor, _ := c.Get("user_id")
 	seat, err := h.svc.AddSeat(c.Request.Context(), service.AddSeatInput{
-		LicenseKey: req.LicenseKey,
-		Email:      req.Email,
-		Role:       req.Role,
-		ProductID:  str(productID),
+		LicenseKey:  req.LicenseKey,
+		Email:       req.Email,
+		Role:        req.Role,
+		ProductID:   str(productID),
+		ActorUserID: str(actor),
 	})
 	if err != nil {
 		writeAppErr(c, err)
@@ -51,7 +53,8 @@ func (h *SeatHandler) RemoveSeat(c *gin.Context) {
 	}
 
 	productID, _ := c.Get("product_id")
-	err := h.svc.RemoveSeat(c.Request.Context(), req.LicenseKey, req.SeatID, str(productID))
+	actor, _ := c.Get("user_id")
+	err := h.svc.RemoveSeat(c.Request.Context(), req.LicenseKey, req.SeatID, str(productID), str(actor))
 	if err != nil {
 		writeAppErr(c, err)
 		return
@@ -75,4 +78,27 @@ func (h *SeatHandler) ListSeats(c *gin.Context) {
 		return
 	}
 	response.OK(c, gin.H{"seats": seats})
+}
+
+// AcceptInvite consumes the plain token shipped in the seat-invite
+// email and binds the seat to a user account (creating one keyed
+// off the seat email if necessary).
+//
+// Auth-free: the token IS the proof of email ownership. We
+// deliberately don't accept the email from the request — using the
+// token's stored seat.email guarantees the inviter's intent.
+func (h *SeatHandler) AcceptInvite(c *gin.Context) {
+	var req struct {
+		Token string `json:"token" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "token is required")
+		return
+	}
+	res, err := h.svc.AcceptSeatInvite(c.Request.Context(), req.Token)
+	if err != nil {
+		writeAppErr(c, err)
+		return
+	}
+	response.OK(c, res)
 }

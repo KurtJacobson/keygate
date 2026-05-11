@@ -157,27 +157,35 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 		return
 	}
 
-	// Create default plan
+	// Create default plan — pick activation/seat defaults that match
+	// the product type's capability surface. The product_type drives
+	// what fields are even valid: a SaaS product whose plan carries
+	// max_activations=5 would silently violate the capability gate
+	// at runtime (every /license/activate call would 404).
 	planID := store.NewID()
+	var maxActivations, maxSeats int
+	switch req.ProductType {
+	case "saas":
+		maxActivations, maxSeats = 0, 10
+	case "desktop":
+		maxActivations, maxSeats = 3, 0
+	case "hybrid":
+		maxActivations, maxSeats = 3, 10
+	}
 	if _, err := tx.NewRaw(
-		"INSERT INTO plans (id, product_id, name, slug, license_type, max_activations, grace_days, active, created_at) VALUES (?, ?, 'Pro', 'pro', 'subscription', 5, 7, true, now())",
-		planID, productID,
+		"INSERT INTO plans (id, product_id, name, slug, license_type, max_activations, max_seats, grace_days, active, created_at) VALUES (?, ?, 'Pro', 'pro', 'subscription', ?, ?, 7, true, now())",
+		planID, productID, maxActivations, maxSeats,
 	).Exec(ctx); err != nil {
 		response.Internal(c)
 		return
 	}
 
-	// Generate API key
-	rawKey := store.GenerateRawAPIKey()
-	apiKeyID := store.NewID()
-	keyHash := store.HashAPIKey(rawKey)
-	if _, err := tx.NewRaw(
-		"INSERT INTO api_keys (id, product_id, name, key_hash, prefix, scopes, created_at) VALUES (?, ?, 'Default', ?, ?, '{}', now())",
-		apiKeyID, productID, keyHash, rawKey[:12],
-	).Exec(ctx); err != nil {
-		response.Internal(c)
-		return
-	}
+	// We deliberately don't auto-create an API key during setup.
+	// Under RequireScope, a fresh key with scopes={} can't reach any
+	// admin route — shipping one in the response would mislead users
+	// into thinking they have a usable credential. They mint one
+	// later from /admin/api-keys with the scope that matches the
+	// intended use (admin / licenses:write / releases:write).
 
 	// Mark setup complete
 	if _, err := tx.NewRaw(
@@ -196,20 +204,10 @@ func (h *SetupHandler) Initialize(c *gin.Context) {
 	user := &model.User{ID: actualUserID, Email: req.AdminEmail, Name: req.AdminName, Role: model.RoleOwner}
 	product := &model.Product{ID: productID, Name: req.ProductName, Slug: req.ProductSlug, Type: req.ProductType}
 	plan := &model.Plan{ID: planID, ProductID: productID, Name: "Pro", Slug: "pro", LicenseType: "subscription"}
-	apiKey := &model.APIKey{ID: apiKeyID, ProductID: productID, Name: "Default", Prefix: rawKey[:12]}
 
-	// 8. Return created resources
 	response.Created(c, gin.H{
 		"user":    user,
 		"product": product,
 		"plan":    plan,
-		"api_key": gin.H{
-			"id":         apiKey.ID,
-			"product_id": apiKey.ProductID,
-			"name":       apiKey.Name,
-			"prefix":     apiKey.Prefix,
-			"scopes":     apiKey.Scopes,
-			"key":        rawKey,
-		},
 	})
 }

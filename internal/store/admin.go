@@ -88,6 +88,34 @@ func (s *Store) DeletePlan(ctx context.Context, id string) error {
 	return err
 }
 
+// CountPlansIncompatibleWithType counts plans under the given product
+// whose capability fields would become invalid under newType. Used to
+// block product-type changes that would silently leave behind plan
+// rows with max_activations or floating license_model on a SaaS
+// product, or max_seats on a desktop product.
+//
+// Rules mirror model.ProductSupports:
+//   - if newType doesn't support activations → max_activations>0 OR
+//     license_model='floating' is a conflict
+//   - if newType doesn't support seats → max_seats>0 is a conflict
+func (s *Store) CountPlansIncompatibleWithType(ctx context.Context, productID, newType string) (int, error) {
+	supportsAct := model.ProductSupports(newType, model.CapActivations)
+	supportsSeats := model.ProductSupports(newType, model.CapSeats)
+	if supportsAct && supportsSeats {
+		return 0, nil
+	}
+	q := s.DB.NewSelect().Model((*model.Plan)(nil)).Where("product_id = ?", productID)
+	switch {
+	case !supportsAct && !supportsSeats:
+		q = q.Where("max_activations > 0 OR license_model = 'floating' OR max_seats > 0")
+	case !supportsAct:
+		q = q.Where("max_activations > 0 OR license_model = 'floating'")
+	case !supportsSeats:
+		q = q.Where("max_seats > 0")
+	}
+	return q.Count(ctx)
+}
+
 // ─── Entitlement ───
 
 func (s *Store) FindEntitlementByID(ctx context.Context, id string) (*model.Entitlement, error) {
@@ -139,6 +167,46 @@ func (s *Store) CreateAPIKey(ctx context.Context, ak *model.APIKey, rawKey strin
 
 func (s *Store) DeleteAPIKey(ctx context.Context, id string) error {
 	_, err := s.DB.NewDelete().Model((*model.APIKey)(nil)).Where("id = ?", id).Exec(ctx)
+	return err
+}
+
+// GetLicenseProductID is a one-column lookup used by handlers that
+// only need to know which product a license belongs to (for API key
+// scope enforcement). Cheaper than FindLicenseByID which eager-loads
+// product, plan, entitlements, and activations.
+func (s *Store) GetLicenseProductID(ctx context.Context, id string) (string, error) {
+	var pid string
+	err := s.DB.NewSelect().Model((*model.License)(nil)).
+		Column("product_id").
+		Where("id = ?", id).
+		Scan(ctx, &pid)
+	return pid, err
+}
+
+// FindAPIKeyByID is the byID lookup used by the admin/rotate path.
+// It does not eager-load the product since the rotate response only
+// needs the row's name + scopes for audit context.
+func (s *Store) FindAPIKeyByID(ctx context.Context, id string) (*model.APIKey, error) {
+	ak := new(model.APIKey)
+	err := s.DB.NewSelect().Model(ak).Where("id = ?", id).Scan(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return ak, nil
+}
+
+// RotateAPIKey swaps the secret for an existing row. The ID, name,
+// scopes, and product binding are preserved so callers can update
+// their config without re-registering the key. last_used/last_used_ip
+// are reset since the previous physical secret is no longer valid.
+func (s *Store) RotateAPIKey(ctx context.Context, id, rawKey, prefix string) error {
+	_, err := s.DB.NewUpdate().Model((*model.APIKey)(nil)).
+		Set("key_hash = ?", HashAPIKey(rawKey)).
+		Set("prefix = ?", prefix).
+		Set("last_used = NULL").
+		Set("last_used_ip = ''").
+		Where("id = ?", id).
+		Exec(ctx)
 	return err
 }
 
@@ -229,13 +297,30 @@ func (s *Store) ExportLicenses(ctx context.Context, productID, status string) ([
 
 // ─── Audit Log ───
 
-func (s *Store) ListAuditLogs(ctx context.Context, entity, entityID string, offset, limit int) ([]*model.AuditLog, int, error) {
+// ListAuditLogs returns paginated audit-log rows. Filters compose
+// with AND. The optional productID filter resolves the parent product
+// across the entity types that carry a product_id FK (license, plan,
+// addon, webhook, release, api_key, plus the product row itself). It
+// is best-effort: 2-hop entities (seat, activation, release_artifact)
+// aren't matched and silently fall out of the filtered view.
+func (s *Store) ListAuditLogs(ctx context.Context, entity, entityID, productID string, offset, limit int) ([]*model.AuditLog, int, error) {
 	q := s.DB.NewSelect().Model((*model.AuditLog)(nil)).OrderExpr("created_at DESC")
 	if entity != "" {
 		q = q.Where("entity = ?", entity)
 	}
 	if entityID != "" {
 		q = q.Where("entity_id = ?", entityID)
+	}
+	if productID != "" {
+		q = q.Where(`(
+            (entity = 'product' AND entity_id = ?)
+         OR entity_id IN (SELECT id FROM licenses  WHERE product_id = ?)
+         OR entity_id IN (SELECT id FROM plans     WHERE product_id = ?)
+         OR entity_id IN (SELECT id FROM addons    WHERE product_id = ?)
+         OR entity_id IN (SELECT id FROM webhooks  WHERE product_id = ?)
+         OR entity_id IN (SELECT id FROM releases  WHERE product_id = ?)
+         OR entity_id IN (SELECT id FROM api_keys  WHERE product_id = ?)
+        )`, productID, productID, productID, productID, productID, productID, productID)
 	}
 	total, err := q.Count(ctx)
 	if err != nil {
@@ -315,6 +400,18 @@ func (s *Store) ListUsers(ctx context.Context, search string, offset, limit int)
 func (s *Store) DeleteActivationByID(ctx context.Context, id string) error {
 	_, err := s.DB.NewDelete().Model((*model.Activation)(nil)).Where("id = ?", id).Exec(ctx)
 	return err
+}
+
+// GetActivationProductID resolves the product behind an activation
+// in a single query. Used by the activation delete handler to enforce
+// API-key product scoping without loading the full activation row.
+func (s *Store) GetActivationProductID(ctx context.Context, activationID string) (string, error) {
+	var pid string
+	err := s.DB.NewRaw(`
+        SELECT l.product_id
+        FROM activations a JOIN licenses l ON l.id = a.license_id
+        WHERE a.id = ?`, activationID).Scan(ctx, &pid)
+	return pid, err
 }
 
 func (s *Store) ListActivations(ctx context.Context, licenseID string) ([]*model.Activation, error) {

@@ -76,16 +76,48 @@ func (s *Store) ListPendingDeliveries(ctx context.Context, limit int) ([]*model.
 	return out, err
 }
 
-func (s *Store) ListWebhookDeliveries(ctx context.Context, webhookID string, offset, limit int) ([]*model.WebhookDelivery, int, error) {
+// WebhookDeliveryFilter narrows ListWebhookDeliveries. Status / Event
+// are optional — empty values mean "no filter on this dimension".
+// Used by the admin UI to drill into "show me only failed deliveries"
+// without pulling the whole history.
+type WebhookDeliveryFilter struct {
+	WebhookID string
+	Status    string // pending | delivered | failed
+	Event     string // exact event name, e.g. license.created
+	Offset    int
+	Limit     int
+}
+
+func (s *Store) ListWebhookDeliveries(ctx context.Context, f WebhookDeliveryFilter) ([]*model.WebhookDelivery, int, error) {
 	q := s.DB.NewSelect().Model((*model.WebhookDelivery)(nil)).
-		Where("webhook_id = ?", webhookID).OrderExpr("created_at DESC")
+		Where("webhook_id = ?", f.WebhookID).
+		OrderExpr("created_at DESC")
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+	}
+	if f.Event != "" {
+		q = q.Where("event = ?", f.Event)
+	}
 	total, err := q.Count(ctx)
 	if err != nil {
 		return nil, 0, err
 	}
+	limit := f.Limit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
 	var out []*model.WebhookDelivery
-	err = q.Offset(offset).Limit(limit).Scan(ctx, &out)
+	err = q.Offset(f.Offset).Limit(limit).Scan(ctx, &out)
 	return out, total, err
+}
+
+// FindWebhookDeliveryByID returns a single delivery row. Used by the
+// delivery detail view + the resend endpoint so admins can inspect
+// payload / response and trigger a manual re-fire.
+func (s *Store) FindWebhookDeliveryByID(ctx context.Context, id string) (*model.WebhookDelivery, error) {
+	d := new(model.WebhookDelivery)
+	err := s.DB.NewSelect().Model(d).Where("id = ?", id).Scan(ctx)
+	return d, err
 }
 
 var _ bun.DB

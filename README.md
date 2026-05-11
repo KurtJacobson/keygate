@@ -50,7 +50,15 @@ One binary. One database. Full control. Free, forever.
 
 ### 🔑 License Management
 
-Every model in one platform — **subscriptions**, **perpetual**, **trials**, and **floating** (concurrent) licenses. Create, activate, verify, suspend, reinstate, and revoke with full audit trail. Per-device or per-user activation limits. Grace periods. License keys hashed with SHA-256. Signed tokens for offline verification.
+Every model in one platform — **subscriptions**, **perpetual**, **trials**, and **floating** (concurrent) licenses. Create, activate, verify, suspend, reinstate, and revoke with full audit trail. Per-device or per-user activation limits with **atomic enforcement** (no double-counting under retry). Grace periods. License keys hashed with SHA-256, encrypted at rest. Signed tokens for offline verification. **`Idempotency-Key` header** support on writes — retries never duplicate.
+
+Public SDK endpoints (activate / verify / deactivate / usage / download) take `license_key` directly — no embedded API keys to leak from your binaries. Customers can self-serve activation slots from the portal (free up a lost laptop without a support ticket).
+
+### 🚀 Software Distribution
+
+Ship signed updates to your installed clients. **Sparkle** (macOS), **Velopack** (Windows), and **Tauri** (cross-platform) updaters all consume the same release feed — one publish, every updater compatible. Per-platform binaries grouped under a single release, **atomic publish gate** (no half-uploaded releases ever leak), **yank** for instant rollback. Per-product **Ed25519 signing keys** with private keys encrypted at rest under AES-256-GCM + HKDF-derived subkeys. Server-side SHA-256 for integrity (never trust the client's hash). Stable feeds are public — your customers' auto-updater never breaks when a license rotates. Per-product `minimum_supported_version` floor for forced upgrades.
+
+Object storage is S3-compatible — Cloudflare R2, AWS S3, MinIO, anything that speaks SigV4. Presigned URLs for direct browser upload (no proxying through Keygate), and license-gated short-TTL download URLs.
 
 ### 📊 Usage Metering
 
@@ -64,17 +72,21 @@ Stripe integrated end-to-end with **three-layer reliability** — webhook, succe
 
 Customers manage their own teams within a license. Seat roles (owner/admin/member), configurable limits per plan. Feature entitlements as boolean flags, numeric limits, or usage quotas. Purchasable add-ons that extend plan capabilities.
 
+### 🔧 Server-to-Server API
+
+Programmatic admin access via `Authorization: Bearer kg_live_…` — mint licenses from your Stripe webhook, run nightly usage exports from cron, automate everything `/admin/*` can do. **Scope-based authorization** with fail-closed defaults (an API key with no scopes can do nothing). System-wide admin keys or per-product keys — same model as Stripe `sk_live_` and GitHub PATs.
+
 ### 📈 Admin Dashboard
 
 Products, plans, licenses, customers, API keys, webhooks, analytics, audit logs, team management, email templates, and brand customization — all from one interface. Search, filter, and export (CSV/JSON).
 
 ### 🛡️ Security
 
-Email OTP login with constant-time hash verification, role-based access checked per-request from database, brute-force protection, rate limiting, HMAC-signed webhooks, SameSite cookies, HSTS, and startup validation that rejects weak secrets.
+Email OTP login with constant-time hash verification, role-based access checked per-request from database, brute-force protection, rate limiting, HMAC-signed webhooks, SameSite cookies, HSTS, and startup validation that rejects weak secrets. License verify endpoints collapse all "license-knowable" failures to a single 404 so `license_key` enumeration is closed off. Idempotency-Key middleware prevents double-execution on retried writes.
 
 ### 🌍 Self-Hosted
 
-Single Go binary + PostgreSQL. No Redis, no microservices. Auto-migration on startup. Setup wizard for first run. Custom branding, email templates, and i18n (English/Chinese built-in).
+Single Go binary + PostgreSQL + (optional) S3-compatible storage for release artifacts. No Redis, no microservices. Auto-migration on startup. Setup wizard for first run. Custom branding, email templates, and i18n (English/Chinese built-in).
 
 <br />
 
@@ -119,10 +131,12 @@ Open **http://localhost:9000** — the setup wizard guides you from there.
 | Floating licenses | ✅ | ✅ | ✅ | ✅ |
 | Usage metering | **✅** | ❌ | ❌ | ❌ |
 | Built-in payments | **✅** | ❌ | ❌ | ❌ |
+| Auto-update distribution | **✅ Sparkle / Velopack / Tauri** | ✅ Paid add-on | ❌ | ❌ |
 | Customer portal | ✅ | ❌ | ✅ | ✅ |
 | Admin dashboard | ✅ | ✅ | ✅ | ✅ |
 | Webhook system | ✅ | ✅ | ✅ | ✅ |
 | Audit trail | ✅ | ✅ | ❌ | ❌ |
+| Idempotency-Key | **✅** | ❌ | ❌ | ❌ |
 | i18n | ✅ | ❌ | ❌ | ❌ |
 
 <br />

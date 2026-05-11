@@ -291,6 +291,11 @@ export default function SettingsPage() {
                     <Mail className="h-4 w-4" /> {t("settings.testEmailSent")}
                   </span>
                 )}
+                {testEmailMut.isError && (
+                  <span className="text-sm text-destructive">
+                    {testEmailMut.error instanceof Error ? testEmailMut.error.message : t("settings.testEmailFailed")}
+                  </span>
+                )}
               </div>
             </CardContent>
           </Card>

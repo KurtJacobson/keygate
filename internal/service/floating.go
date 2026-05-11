@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"time"
@@ -37,23 +36,17 @@ type CheckOutResult struct {
 }
 
 func (s *FloatingService) CheckOut(ctx context.Context, in CheckOutInput) (*CheckOutResult, error) {
-	lic, err := s.store.FindLicenseByKey(ctx, in.LicenseKey)
+	// Public SDK endpoint: collapse every "can't help you" condition
+	// (missing key, wrong product, non-activation product type,
+	// non-floating plan, suspended/revoked/expired) to one 404. Each
+	// of these would otherwise be an oracle for license existence or
+	// configuration; the legitimate floating client never hits them.
+	lic, err := loadLicenseForSDK(ctx, s.store, in.LicenseKey, in.ProductID, model.CapActivations, true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return nil, apperr.Internal(err)
+		return nil, err
 	}
-	if in.ProductID != "" && lic.ProductID != in.ProductID {
-		return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-	}
-
 	if lic.Plan == nil || lic.Plan.LicenseModel != "floating" {
-		return nil, apperr.BadRequest("license does not support floating model")
-	}
-
-	if lic.Status != model.StatusActive && lic.Status != model.StatusTrialing {
-		return nil, apperr.New(403, "LICENSE_NOT_ACTIVE", "license is not active")
+		return nil, licenseNotFound()
 	}
 
 	timeout := lic.Plan.FloatingTimeout
@@ -94,15 +87,9 @@ func (s *FloatingService) CheckOut(ctx context.Context, in CheckOutInput) (*Chec
 }
 
 func (s *FloatingService) CheckIn(ctx context.Context, licenseKey, identifier, productID string) error {
-	lic, err := s.store.FindLicenseByKey(ctx, licenseKey)
+	lic, err := loadLicenseForSDK(ctx, s.store, licenseKey, productID, model.CapActivations, true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return apperr.Internal(err)
-	}
-	if productID != "" && lic.ProductID != productID {
-		return apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		return err
 	}
 	if err := s.store.CheckInFloating(ctx, lic.ID, identifier); err != nil {
 		return apperr.Internal(err)
@@ -112,15 +99,9 @@ func (s *FloatingService) CheckIn(ctx context.Context, licenseKey, identifier, p
 }
 
 func (s *FloatingService) Heartbeat(ctx context.Context, licenseKey, identifier, productID string) (*CheckOutResult, error) {
-	lic, err := s.store.FindLicenseByKey(ctx, licenseKey)
+	lic, err := loadLicenseForSDK(ctx, s.store, licenseKey, productID, model.CapActivations, true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return nil, apperr.Internal(err)
-	}
-	if productID != "" && lic.ProductID != productID {
-		return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		return nil, err
 	}
 
 	timeout := 30

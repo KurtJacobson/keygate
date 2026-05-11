@@ -64,6 +64,7 @@ func DefaultTemplates() map[string]string {
 		"license_suspended": tmplLicenseSuspended,
 		"quota_warning":     tmplQuotaWarning,
 		"seat_invite":       tmplSeatInvite,
+		"admin_invite":      tmplAdminInvite,
 		"payment_failed":    tmplPaymentFailed,
 	}
 }
@@ -152,11 +153,25 @@ func (s *EmailService) SendQuotaWarning(to, productName, feature string, used, l
 	}()
 }
 
-func (s *EmailService) SendSeatInvite(to, productName, inviterName string) {
-	body := renderTemplate(s.getTemplate("seat_invite", tmplSeatInvite), map[string]string{
-		"Product": productName,
-		"Inviter": inviterName,
+// SendSeatInvite delivers the claim link. acceptURL is the absolute
+// URL pointing at the portal accept-invite page; if the template
+// uses {{InviteURL}} the link renders inline, otherwise we append a
+// plain "Accept the invitation: <URL>" block so even a template
+// admin who forgot to add the placeholder still ships a working
+// link.
+func (s *EmailService) SendSeatInvite(to, productName, inviterName, acceptURL string) {
+	tmpl := s.getTemplate("seat_invite", tmplSeatInvite)
+	body := renderTemplate(tmpl, map[string]string{
+		"Product":   productName,
+		"Inviter":   inviterName,
+		"InviteURL": acceptURL,
 	})
+	// Defensive fallback: if the rendered body doesn't already
+	// contain the claim URL (custom template missed the placeholder),
+	// append it so the recipient still has a way in.
+	if acceptURL != "" && !strings.Contains(body, acceptURL) {
+		body += `<p style="margin-top:24px;font-size:13px;color:#555;">Accept the invitation: <a href="` + acceptURL + `">` + acceptURL + `</a></p>`
+	}
 	go func() {
 		if err := s.Send(to, "You've been invited to "+productName, body); err != nil {
 			s.logger.Error("email delivery failed", "to", to, "subject", "You've been invited to "+productName, "error", err)
@@ -257,6 +272,48 @@ func (s *EmailService) SendDunningFinal(to, productName string) {
 </body></html>`
 	go func() {
 		if err := s.Send(to, productName+" — final payment notice", body); err != nil {
+			s.logger.Error("email delivery failed", "to", to, "error", err)
+		}
+	}()
+}
+
+// SendAdminInvite notifies a Keygate platform operator that they
+// were added (or promoted) to the admin team. The "invite" is
+// really a role grant — the recipient can log in via email-OTP
+// immediately and the email's job is just to tell them that
+// happened.
+//
+// Best-effort: a delivery failure does NOT roll back the role
+// grant on the InviteTeamMember handler. The recipient can still
+// learn out-of-band that they're admin.
+func (s *EmailService) SendAdminInvite(to, siteName, inviterName, role, loginURL string) {
+	body := renderTemplate(s.getTemplate("admin_invite", tmplAdminInvite), map[string]string{
+		"SiteName": siteName,
+		"Inviter":  inviterName,
+		"Role":     role,
+		"LoginURL": loginURL,
+	})
+	go func() {
+		subj := "You've been added to " + siteName
+		if err := s.Send(to, subj, body); err != nil {
+			s.logger.Error("email delivery failed", "to", to, "subject", subj, "error", err)
+		}
+	}()
+}
+
+// SendPaymentRecovered closes the dunning loop: customer fixed the
+// card mid-grace and the subscription is back to active. Without
+// this, the last touch the user has from us is "payment failed",
+// which makes a successful retry feel silent.
+func (s *EmailService) SendPaymentRecovered(to, productName string) {
+	body := `<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #059669;">Payment Recovered — Thanks!</h2>
+<p>Your payment for <strong>` + productName + `</strong> went through. Your subscription is active again, and access is fully restored.</p>
+<p>No further action required.</p>
+</body></html>`
+	go func() {
+		if err := s.Send(to, productName+" — payment recovered", body); err != nil {
 			s.logger.Error("email delivery failed", "to", to, "error", err)
 		}
 	}()
@@ -421,7 +478,22 @@ const tmplSeatInvite = `<!DOCTYPE html>
 <html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
 <h2 style="color: #111;">You've Been Invited</h2>
 <p><strong>{{.Inviter}}</strong> has invited you to join <strong>{{.Product}}</strong>.</p>
-<p>Sign in to your account to accept the invitation.</p>
+<p style="margin: 24px 0;">
+  <a href="{{.InviteURL}}" style="display: inline-block; padding: 10px 20px; background: #2563eb; color: white; text-decoration: none; border-radius: 6px;">Accept the invitation</a>
+</p>
+<p style="font-size: 12px; color: #666;">Or paste this link into your browser: <a href="{{.InviteURL}}">{{.InviteURL}}</a></p>
+<p style="font-size: 12px; color: #999;">This link expires in 7 days.</p>
+</body></html>`
+
+const tmplAdminInvite = `<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #111;">You've been added to {{.SiteName}}</h2>
+<p><strong>{{.Inviter}}</strong> added you as a <strong>{{.Role}}</strong> on the <strong>{{.SiteName}}</strong> admin team.</p>
+<p>Sign in with this email using the email-OTP login to access the admin panel:</p>
+<p style="margin: 24px 0;">
+  <a href="{{.LoginURL}}" style="display: inline-block; padding: 10px 20px; background: #2563eb; color: white; text-decoration: none; border-radius: 6px;">Sign in</a>
+</p>
+<p style="font-size: 12px; color: #666;">Or paste this link into your browser: <a href="{{.LoginURL}}">{{.LoginURL}}</a></p>
 </body></html>`
 
 const tmplLicenseSuspended = `<!DOCTYPE html>

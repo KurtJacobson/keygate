@@ -1,6 +1,7 @@
 package model
 
 import (
+	"slices"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -56,55 +57,185 @@ type OTPCode struct {
 
 // ─── Product ───
 
+// Product types — drive capability gating.
+//
+// The product type decides WHAT CAPABILITIES the product exposes
+// (activations / seats / release feeds) — not the commercial model.
+// `plan.license_type` (perpetual/subscription/trial) and
+// `plan.license_model` (standard/floating) stay independent so a
+// desktop product can ship under subscription pricing, and a SaaS
+// product can ship under a lifetime perpetual deal.
+const (
+	ProductTypeDesktop = "desktop"
+	ProductTypeSaaS    = "saas"
+	ProductTypeHybrid  = "hybrid"
+)
+
+// Product capability identifiers. Used by ProductSupports to drive
+// runtime guards in service / handler layers.
+const (
+	// CapActivations: per-device license activation (POST /license/activate
+	// /verify/deactivate + floating sessions).
+	CapActivations = "activations"
+	// CapSeats: per-user seat management. Mutation endpoints live
+	// under /portal/seats/* (session-authed) and /invites/accept
+	// (public, token-only) — NOT on the SDK /license/* namespace.
+	CapSeats = "seats"
+	// CapReleases: software update feeds + admin release management.
+	CapReleases = "releases"
+)
+
+// IsValidProductType reports whether t is one of the three accepted
+// product types.
+func IsValidProductType(t string) bool {
+	return t == ProductTypeDesktop || t == ProductTypeSaaS || t == ProductTypeHybrid
+}
+
+// ProductSupports reports whether a product of type `t` exposes the
+// given capability. Centralised so service-layer guards and openapi
+// docs stay in sync. Note: usage / entitlements / quotas are
+// universally available and intentionally not gated here — those
+// are billing primitives that any product type may need.
+func ProductSupports(t, capability string) bool {
+	switch t {
+	case ProductTypeDesktop:
+		// Local installs: device activations + auto-update feeds.
+		// No multi-user seat concept (one customer = one or more devices).
+		return capability == CapActivations || capability == CapReleases
+	case ProductTypeSaaS:
+		// Hosted service: per-user seats. No client binary to update
+		// (operator deploys), no per-device activation.
+		return capability == CapSeats
+	case ProductTypeHybrid:
+		// Cloud + installable client: both activation AND seat models
+		// matter, plus auto-updates for the installed binary.
+		return capability == CapActivations || capability == CapSeats || capability == CapReleases
+	}
+	return false
+}
+
 type Product struct {
 	bun.BaseModel `bun:"table:products"`
 
-	ID        string    `bun:",pk" json:"id"`
-	Name      string    `bun:",notnull" json:"name"`
-	Slug      string    `bun:",notnull,unique" json:"slug"`
-	Type      string    `bun:",notnull" json:"type"`
+	ID   string `bun:",pk" json:"id"`
+	Name string `bun:",notnull" json:"name"`
+	Slug string `bun:",notnull,unique" json:"slug"`
+	Type string `bun:",notnull" json:"type"`
+
+	// MinimumSupportedVersion: optional semver floor. When non-empty,
+	// auto-update feeds embed this so clients can refuse to keep
+	// running an installed build older than the floor — the simple
+	// "force upgrade" knob without staged rollout machinery.
+	MinimumSupportedVersion string `bun:",notnull,default:''" json:"minimum_supported_version,omitempty"`
+
+	// MinimumSupportedMessage: human-readable note shown alongside the
+	// forced-upgrade prompt (e.g. "old TLS protocol no longer accepted").
+	MinimumSupportedMessage string `bun:",notnull,default:''" json:"minimum_supported_message,omitempty"`
+
+	// RequireSigning: when true (the safe default for new products),
+	// publishing a release fails if no active signing key is configured.
+	// Flip to false only for products that intentionally ship unsigned
+	// builds (CI test artifacts, internal tooling).
+	RequireSigning bool `bun:",notnull,default:true" json:"require_signing"`
+
 	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
 }
 
-// ─── API Key (per product, for client SDK auth) ───
-
+// ─── API Key (programmatic credential, server-to-server) ───
+//
+// ProductID is OPTIONAL: when empty/null the key is system-wide
+// (operator scripts, cross-product migrations); when set, it's bound
+// to that specific product (future per-product s2s integration).
+// Scopes drive what the key can actually do — see ScopeAdmin etc.
+// Empty scopes = the key can do nothing (fail-closed).
 type APIKey struct {
 	bun.BaseModel `bun:"table:api_keys"`
 
-	ID        string     `bun:",pk" json:"id"`
-	ProductID string     `bun:",notnull" json:"product_id"`
-	Name      string     `bun:",notnull" json:"name"`
-	KeyHash   string     `bun:",notnull,unique" json:"-"`
-	Prefix    string     `bun:",notnull" json:"prefix"`
-	Scopes    []string   `bun:",array" json:"scopes"`
-	LastUsed  *time.Time `json:"last_used,omitempty"`
-	CreatedAt time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	ID         string     `bun:",pk" json:"id"`
+	ProductID  string     `bun:",nullzero" json:"product_id,omitempty"`
+	Name       string     `bun:",notnull" json:"name"`
+	KeyHash    string     `bun:",notnull,unique" json:"-"`
+	Prefix     string     `bun:",notnull" json:"prefix"`
+	Scopes     []string   `bun:",array" json:"scopes"`
+	LastUsed   *time.Time `json:"last_used,omitempty"`
+	LastUsedIP string     `bun:",notnull,default:''" json:"last_used_ip,omitempty"`
+	CreatedAt  time.Time  `bun:",nullzero,default:now()" json:"created_at"`
 
 	Product *Product `bun:"rel:belongs-to,join:product_id=id" json:"product,omitempty"`
 }
 
+// Scope vocabulary.
+//
+// admin is the wildcard — equivalent to a logged-in admin session,
+// matches every admin route. The narrower scopes exist so a CI/CD
+// runner or merchant backend can mint a key that's only allowed to
+// do its specific job, limiting blast radius if leaked.
+//
+// We resist the urge to pre-emptively add every read/write split.
+// Real customer asks decide what gets added (e.g. usage:write,
+// licenses:read). Keep this list short and meaningful.
+const (
+	ScopeAdmin         = "admin"
+	ScopeLicensesWrite = "licenses:write"
+	ScopeReleasesWrite = "releases:write"
+)
+
+// AllScopes is the closed enumeration used to validate
+// CreateAPIKey / RotateAPIKey requests. Unknown scope strings are
+// rejected at the boundary so a typo doesn't silently become a
+// useless key.
+func AllScopes() []string {
+	return []string{ScopeAdmin, ScopeLicensesWrite, ScopeReleasesWrite}
+}
+
+// IsValidScope reports whether s is a known scope.
+func IsValidScope(s string) bool {
+	return slices.Contains(AllScopes(), s)
+}
+
 func (a *APIKey) GetID() string       { return a.ID }
 func (a *APIKey) GetScopes() []string { return a.Scopes }
+
+// HasScope returns true if the key carries the given scope OR the
+// admin wildcard. Centralizing this means RequireScope, audit logs,
+// and the admin UI all answer the same question the same way.
+func (a *APIKey) HasScope(scope string) bool {
+	if a == nil {
+		return false
+	}
+	for _, s := range a.Scopes {
+		if s == ScopeAdmin || s == scope {
+			return true
+		}
+	}
+	return false
+}
 
 // ─── Plan ───
 
 type Plan struct {
 	bun.BaseModel `bun:"table:plans"`
 
-	ID              string    `bun:",pk" json:"id"`
-	ProductID       string    `bun:",notnull" json:"product_id"`
-	Name            string    `bun:",notnull" json:"name"`
-	Slug            string    `bun:",notnull" json:"slug"`
-	CheckoutID      string    `bun:",unique,notnull" json:"checkout_id"`
-	LicenseType     string    `bun:",notnull" json:"license_type"`
-	BillingInterval string    `json:"billing_interval,omitempty"`
-	MaxActivations  int       `bun:",notnull,default:3" json:"max_activations"`
-	TrialDays       int       `bun:",default:0" json:"trial_days"`
-	GraceDays       int       `bun:",default:7" json:"grace_days"`
+	ID              string `bun:",pk" json:"id"`
+	ProductID       string `bun:",notnull" json:"product_id"`
+	Name            string `bun:",notnull" json:"name"`
+	Slug            string `bun:",notnull" json:"slug"`
+	CheckoutID      string `bun:",unique,notnull" json:"checkout_id"`
+	LicenseType     string `bun:",notnull" json:"license_type"`
+	BillingInterval string `json:"billing_interval,omitempty"`
+	// IMPORTANT: do NOT add bun `default:N` annotations here. Bun
+	// translates a zero Go value on a `default:N` field into SQL
+	// DEFAULT — which means a deliberate `0` from the handler ends up
+	// stored as the column default (e.g. 3). The DB column keeps its
+	// CREATE-TABLE default for legacy data, but the handler is now the
+	// sole source of truth for these values.
+	MaxActivations  int       `bun:",notnull" json:"max_activations"`
+	TrialDays       int       `bun:",notnull" json:"trial_days"`
+	GraceDays       int       `bun:",notnull" json:"grace_days"`
 	StripePriceID   string    `json:"stripe_price_id,omitempty"`
-	LicenseModel    string    `bun:",notnull,default:'standard'" json:"license_model"` // standard | floating
-	FloatingTimeout int       `bun:",notnull,default:30" json:"floating_timeout"`      // minutes
-	MaxSeats        int       `bun:",notnull,default:0" json:"max_seats"`
+	LicenseModel    string    `bun:",notnull" json:"license_model"` // standard | floating
+	FloatingTimeout int       `bun:",notnull" json:"floating_timeout"`
+	MaxSeats        int       `bun:",notnull" json:"max_seats"`
 	Active          bool      `bun:",notnull,default:true" json:"active"`
 	SortOrder       int       `bun:",default:0" json:"sort_order"`
 	CreatedAt       time.Time `bun:",nullzero,default:now()" json:"created_at"`
@@ -125,6 +256,11 @@ type Entitlement struct {
 	Value       string `bun:",notnull" json:"value"`
 	QuotaPeriod string `bun:",default:''" json:"quota_period,omitempty"`
 	QuotaUnit   string `bun:",default:''" json:"quota_unit,omitempty"`
+	// StripeMeterEventName: the Stripe Billing Meter event_name to
+	// emit on each RecordUsage call. Configured per-meter in the
+	// merchant's Stripe dashboard. Empty disables metered sync for
+	// the feature (Keygate-internal quota only).
+	StripeMeterEventName string `bun:",notnull,default:''" json:"stripe_meter_event_name,omitempty"`
 }
 
 // ─── License ───
@@ -139,6 +275,12 @@ type License struct {
 	Email      string `bun:",notnull" json:"email"`
 	LicenseKey string `bun:",notnull,unique" json:"license_key"`
 	KeyHash    string `bun:",notnull,default:''" json:"-"` // never exposed in API
+	// LicenseKeyEncrypted stores the license key encrypted at rest under
+	// HKDF("license-key") subkey of the master encryption key. Phase A:
+	// new rows have it populated alongside LicenseKey. Phase B will
+	// backfill existing rows. Phase C will drop the plaintext column.
+	// Always JSON-hidden; decrypt path is store.DecryptLicenseKey.
+	LicenseKeyEncrypted []byte `bun:",nullzero" json:"-"`
 
 	PaymentProvider      string `json:"payment_provider,omitempty"`
 	StripeCustomerID     string `json:"stripe_customer_id,omitempty"`
@@ -149,10 +291,22 @@ type License struct {
 	ValidUntil  *time.Time `json:"valid_until,omitempty"`
 	CanceledAt  *time.Time `json:"canceled_at,omitempty"`
 	SuspendedAt *time.Time `json:"suspended_at,omitempty"`
-	Notes       string     `json:"notes,omitempty"`
-	OrgName     string     `json:"org_name,omitempty"`
-	CreatedAt   time.Time  `bun:",nullzero,default:now()" json:"created_at"`
-	UpdatedAt   time.Time  `bun:",nullzero,default:now()" json:"updated_at"`
+	// PastDueAt anchors the dunning-email ladder. Set by the
+	// payment-failed handler when the license first enters past_due;
+	// cleared on recovery / cancellation. Reading lic.UpdatedAt as
+	// a clock here is wrong — that column bumps on unrelated writes.
+	PastDueAt *time.Time `json:"past_due_at,omitempty"`
+	Notes     string     `json:"notes,omitempty"`
+	OrgName   string     `json:"org_name,omitempty"`
+
+	// External identifiers — opaque strings owned by the merchant.
+	// Used to map Keygate licenses to the merchant's own user/tenant
+	// model without a separate mapping table on their side.
+	ExternalCustomerID  string `bun:",notnull,default:''" json:"external_customer_id,omitempty"`
+	ExternalWorkspaceID string `bun:",notnull,default:''" json:"external_workspace_id,omitempty"`
+
+	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
+	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
 
 	Product     *Product        `bun:"rel:belongs-to,join:product_id=id" json:"product,omitempty"`
 	Plan        *Plan           `bun:"rel:belongs-to,join:plan_id=id" json:"plan,omitempty"`
@@ -215,8 +369,15 @@ type Seat struct {
 	InvitedAt     time.Time  `bun:",nullzero,default:now()" json:"invited_at"`
 	AcceptedAt    *time.Time `json:"accepted_at,omitempty"`
 	RemovedAt     *time.Time `json:"removed_at,omitempty"`
-	CreatedAt     time.Time  `bun:",nullzero,default:now()" json:"created_at"`
-	License       *License   `bun:"rel:belongs-to,join:license_id=id" json:"license,omitempty"`
+	// InviteTokenHash: SHA256 of the plain token sent to the
+	// invitee. Cleared on accept / expire / revoke so the slot
+	// frees up. The plain token never lives in the DB.
+	InviteTokenHash string `bun:",nullzero" json:"-"`
+	// InviteExpiresAt: pinned at invite-time. After this, /seats/accept
+	// returns 410 GONE and admin must re-issue.
+	InviteExpiresAt *time.Time `json:"invite_expires_at,omitempty"`
+	CreatedAt       time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	License         *License   `bun:"rel:belongs-to,join:license_id=id" json:"license,omitempty"`
 }
 
 // ─── Usage ───
@@ -353,7 +514,17 @@ type LicenseAddon struct {
 	Addon         *Addon    `bun:"rel:belongs-to,join:addon_id=id" json:"addon,omitempty"`
 }
 
-// ─── Metered Billing ───
+// ─── Metered Billing (event log) ───
+//
+// One row per RecordUsage call that targets a metered entitlement.
+// Quantity is the DELTA contributed by that call (not the running
+// total) — Stripe's Billing Meter API accumulates server-side per
+// customer + event_name.
+//
+// Identifier is the stable token Keygate hands to Stripe as the
+// meter event's `identifier` field; Stripe dedupes retries over a
+// rolling 24-hour window using it, so our sync job can call as
+// many times as it wants without double-counting.
 type MeteredBilling struct {
 	bun.BaseModel `bun:"table:metered_billing"`
 	ID            string     `bun:",pk" json:"id"`
@@ -361,10 +532,16 @@ type MeteredBilling struct {
 	Feature       string     `bun:",notnull" json:"feature"`
 	Quantity      int64      `bun:",notnull" json:"quantity"`
 	PeriodKey     string     `bun:",notnull" json:"period_key"`
+	Identifier    string     `bun:",notnull,default:''" json:"identifier,omitempty"`
 	Synced        bool       `bun:",notnull,default:false" json:"synced"`
 	SyncedAt      *time.Time `json:"synced_at,omitempty"`
 	ExternalID    string     `json:"external_id,omitempty"`
-	CreatedAt     time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	// Attempts increments on every push to Stripe (success OR
+	// failure). LastError records the most recent failure message
+	// so operators can debug stuck rows without tailing logs.
+	Attempts  int       `bun:",notnull,default:0" json:"attempts"`
+	LastError string    `bun:",notnull,default:''" json:"last_error,omitempty"`
+	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
 }
 
 // Webhook event constants
@@ -379,4 +556,155 @@ const (
 	EventSeatAdded         = "seat.added"
 	EventSeatRemoved       = "seat.removed"
 	EventPlanChanged       = "plan.changed"
+	EventReleasePublished  = "release.published"
+	EventReleaseYanked     = "release.yanked"
+	EventReleaseUnyanked   = "release.unyanked"
 )
+
+// ─── Release (logical release event) ───
+//
+// A release is a versioned event scoped to a product. It contains zero or
+// more platform-specific Artifacts. Lifecycle (draft/published/yanked)
+// applies to the whole release; yanking pulls every artifact from the
+// feed at once. This matches GitHub Releases / Keygen / npm conventions.
+type Release struct {
+	bun.BaseModel `bun:"table:releases"`
+
+	ID        string `bun:",pk" json:"id"`
+	ProductID string `bun:",notnull" json:"product_id"`
+
+	// Version is unique per product. v1.2.3 is one release; multiple
+	// platform binaries live as Artifacts under it.
+	Version string `bun:",notnull" json:"version"`
+	// Channel uses nullzero so Go zero-value "" delegates to SQL DEFAULT 'stable'.
+	Channel string `bun:",notnull,nullzero,default:'stable'" json:"channel"`
+
+	Name         string `bun:",notnull,default:''" json:"name"`
+	ReleaseNotes string `bun:",notnull,default:''" json:"release_notes"`
+
+	// Status uses nullzero so Go zero-value delegates to SQL DEFAULT 'draft'.
+	Status       string `bun:",notnull,nullzero,default:'draft'" json:"status"`
+	YankedReason string `bun:",notnull,default:''" json:"yanked_reason,omitempty"`
+
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	YankedAt    *time.Time `json:"yanked_at,omitempty"`
+	CreatedAt   time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	UpdatedAt   time.Time  `bun:",nullzero,default:now()" json:"updated_at"`
+
+	Product   *Product           `bun:"rel:belongs-to,join:product_id=id" json:"product,omitempty"`
+	Artifacts []*ReleaseArtifact `bun:"rel:has-many,join:id=release_id" json:"artifacts,omitempty"`
+}
+
+// ReleaseArtifact is a per-platform binary within a Release.
+//
+// Each artifact carries its own sha256 + ed25519_sig (per-platform binaries
+// have different bytes, so signatures must be per-artifact). One artifact
+// per (release_id, platform) tuple — enforced by DB UNIQUE.
+//
+// Ed25519Sig format contract:
+//
+//	raw base64-encoded 64-byte Ed25519 signature of the artifact bytes.
+//	88 characters when base64-padded. Empty string = unsigned.
+//	Feed renderers convert to per-target format (Sparkle uses as-is in
+//	sparkle:edSignature; Tauri/Velopack adapt as needed).
+type ReleaseArtifact struct {
+	bun.BaseModel `bun:"table:release_artifacts"`
+
+	ID        string `bun:",pk" json:"id"`
+	ReleaseID string `bun:",notnull" json:"release_id"`
+
+	Platform string `bun:",notnull" json:"platform"`
+
+	FileKey     string `bun:",notnull,default:''" json:"file_key"`
+	FileSize    int64  `bun:",notnull,default:0" json:"file_size"`
+	SHA256      string `bun:",notnull,default:''" json:"sha256"`
+	Ed25519Sig  string `bun:",notnull,default:''" json:"ed25519_sig"`
+	ContentType string `bun:",notnull,nullzero,default:'application/octet-stream'" json:"content_type"`
+
+	// SigningKeyID identifies which signing key produced Ed25519Sig.
+	// Nullable when the artifact was published without signing.
+	SigningKeyID string `bun:",nullzero" json:"signing_key_id,omitempty"`
+
+	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
+	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
+
+	Release *Release `bun:"rel:belongs-to,join:release_id=id" json:"-"`
+}
+
+// IsUploaded reports whether the artifact has both a storage key and a
+// sha256, meaning the upload+finalize cycle is complete and the artifact
+// can be part of a published release.
+func (a *ReleaseArtifact) IsUploaded() bool {
+	return a != nil && a.FileKey != "" && a.SHA256 != ""
+}
+
+// Release status constants.
+const (
+	ReleaseStatusDraft     = "draft"
+	ReleaseStatusPublished = "published"
+	ReleaseStatusYanked    = "yanked"
+)
+
+// ─── ReleaseSigningKey (per-product Ed25519 keypair for artifact signing) ───
+//
+// The private key is encrypted at rest using AES-256-GCM under the master
+// key from RELEASE_KEY_ENCRYPTION_KEY. The PrivateKeyEncrypted field is
+// JSON-hidden — it should never appear in any API response.
+//
+// At most one row per product has Active=true (enforced by a partial unique
+// index in the migration). Rotation deactivates the current row and inserts
+// a new one in a single transaction.
+type ReleaseSigningKey struct {
+	bun.BaseModel `bun:"table:release_signing_keys"`
+
+	ID                  string     `bun:",pk" json:"id"`
+	ProductID           string     `bun:",notnull" json:"product_id"`
+	PublicKey           string     `bun:",notnull" json:"public_key"`
+	PrivateKeyEncrypted []byte     `bun:",notnull" json:"-"`
+	Active              bool       `bun:",notnull,default:true" json:"active"`
+	Note                string     `bun:",notnull,default:''" json:"note,omitempty"`
+	CreatedAt           time.Time  `bun:",nullzero,default:now()" json:"created_at"`
+	RotatedAt           *time.Time `json:"rotated_at,omitempty"`
+}
+
+// Release channel constants.
+const (
+	ReleaseChannelStable = "stable"
+	ReleaseChannelBeta   = "beta"
+	ReleaseChannelAlpha  = "alpha"
+	ReleaseChannelDev    = "dev"
+)
+
+// IsValidReleaseChannel reports whether c is one of the allowed channels.
+func IsValidReleaseChannel(c string) bool {
+	switch c {
+	case ReleaseChannelStable, ReleaseChannelBeta, ReleaseChannelAlpha, ReleaseChannelDev:
+		return true
+	}
+	return false
+}
+
+// IdempotencyKey caches the response of an idempotent POST so a retry
+// with the same `Idempotency-Key` header returns the original outcome.
+// (key, endpoint) is composite primary key.
+type IdempotencyKey struct {
+	bun.BaseModel `bun:"table:idempotency_keys"`
+
+	Key      string `bun:",pk" json:"key"`
+	Endpoint string `bun:",pk" json:"endpoint"`
+
+	BodyHash string `bun:",notnull" json:"body_hash"`
+
+	ResponseStatus   int    `bun:",notnull,default:0" json:"response_status"`
+	ResponseBody     string `bun:",notnull,default:''" json:"response_body"`
+	ResponseComplete bool   `bun:",notnull,default:false" json:"response_complete"`
+
+	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
+	ExpiresAt time.Time `bun:",nullzero" json:"expires_at"`
+}
+
+// API key scopes — reserved for future server-to-server integrations
+// (e.g. license:read, license:write). No scope is currently enforced
+// at the route layer; api_keys are programmatic credentials waiting on
+// a use-case. The Scopes []string column on api_keys is preserved so
+// rolling out a future scope is a route-layer change only.

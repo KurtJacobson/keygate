@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Pencil, Plus, Search, Trash2 } from "lucide-react"
+import { Cloud, Laptop, Layers, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { showToast } from "@/components/toast"
 import {
@@ -28,7 +28,6 @@ import {
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useI18n } from "@/i18n"
 import { admin, type Product } from "@/lib/api"
 import { formatDate } from "@/lib/utils"
@@ -259,16 +258,32 @@ function ProductDialog({
           </div>
           <div className="space-y-2">
             <Label>{t("common.type")}</Label>
-            <Select value={type} onValueChange={setType}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="desktop">{t("products.desktop")}</SelectItem>
-                <SelectItem value="saas">{t("products.saas")}</SelectItem>
-                <SelectItem value="hybrid">{t("products.hybrid")}</SelectItem>
-              </SelectContent>
-            </Select>
+            <div className="grid grid-cols-3 gap-3">
+              <ProductTypeCard
+                value="desktop"
+                icon={Laptop}
+                title={t("products.desktop")}
+                description={t("products.desktopDesc")}
+                selected={type === "desktop"}
+                onSelect={() => setType("desktop")}
+              />
+              <ProductTypeCard
+                value="saas"
+                icon={Cloud}
+                title={t("products.saas")}
+                description={t("products.saasDesc")}
+                selected={type === "saas"}
+                onSelect={() => setType("saas")}
+              />
+              <ProductTypeCard
+                value="hybrid"
+                icon={Layers}
+                title={t("products.hybrid")}
+                description={t("products.hybridDesc")}
+                selected={type === "hybrid"}
+                onSelect={() => setType("hybrid")}
+              />
+            </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>
@@ -281,5 +296,39 @@ function ProductDialog({
         </form>
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ProductTypeCard — the type picker visual. Clicking selects; the
+// selected card gets a primary-colored ring. Mirrors the backend
+// capability map: each card's description tells admins what the type
+// actually enables/disables before they commit.
+function ProductTypeCard({
+  icon: Icon,
+  title,
+  description,
+  selected,
+  onSelect,
+}: {
+  value: string
+  icon: typeof Laptop
+  title: string
+  description: string
+  selected: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={
+        "flex flex-col items-start gap-2 rounded-md border p-3 text-left transition-colors " +
+        (selected ? "border-primary ring-2 ring-primary bg-primary/5" : "border-input hover:bg-muted/40")
+      }
+    >
+      <Icon className={`h-5 w-5 ${selected ? "text-primary" : "text-muted-foreground"}`} />
+      <div className="text-sm font-medium">{title}</div>
+      <div className="text-xs text-muted-foreground">{description}</div>
+    </button>
   )
 }

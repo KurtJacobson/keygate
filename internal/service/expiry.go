@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/tabloy/keygate/internal/model"
@@ -173,7 +174,7 @@ func (c *ExpiryChecker) SendExpiryReminders(ctx context.Context) {
 			if lic.ValidUntil != nil {
 				expiresAt = lic.ValidUntil.Format("2006-01-02")
 			}
-			c.email.SendLicenseExpiring(lic.Email, productName, lic.LicenseKey, expiresAt)
+			c.email.SendLicenseExpiring(lic.Email, productName, c.store.DecryptLicenseKey(lic), expiresAt)
 			c.store.RecordNotification(ctx, lic.ID, r.tag)
 			c.logger.Info("expiry reminder sent", "license_id", lic.ID, "days", r.days)
 		}
@@ -192,58 +193,90 @@ func (c *ExpiryChecker) CleanupExpiredActivations(ctx context.Context) {
 	}
 }
 
-// SendPaymentFailureReminders sends escalating emails for past_due licenses.
+// SendPaymentFailureReminders walks every past_due license up the
+// dunning ladder. Anchored on lic.PastDueAt so unrelated row writes
+// (audit, sync) don't reset the clock. Each step is gated by
+// HasNotification + a unique tag per past_due_at epoch, so:
+//
+//   - the same email never fires twice for one episode, even if the
+//     checker runs every hour;
+//   - if the checker misses a window (server down) it still fires
+//     the next time it wakes up — there's no narrow `>=N && <N+1`
+//     window that can silently swallow a reminder;
+//   - a customer who recovers and then lapses again later gets a
+//     full fresh ladder for the second episode (the tag includes
+//     past_due_at's epoch).
 func (c *ExpiryChecker) SendPaymentFailureReminders(ctx context.Context) {
-	// Find past_due licenses
 	var licenses []*model.License
 	err := c.store.DB.NewSelect().Model(&licenses).
 		Relation("Product").
-		Where("license.status = 'past_due'").
+		Where("license.status = 'past_due' AND license.past_due_at IS NOT NULL").
 		Scan(ctx)
 	if err != nil || len(licenses) == 0 {
 		return
 	}
 
+	steps := []struct {
+		minDays int
+		tag     string
+		send    func(to, productName string)
+	}{
+		// Highest threshold first — only one email per check per
+		// license, and the "highest reached" wins. Without that,
+		// a license that's been past_due for 20 days would receive
+		// dunning_first + dunning_second + dunning_final on the
+		// FIRST checker run after install.
+		{14, "dunning_final", c.email.SendDunningFinal},
+		{7, "dunning_second", c.email.SendDunningSecond},
+		{1, "dunning_first", c.email.SendPaymentFailed},
+	}
+
+	now := time.Now()
 	for _, lic := range licenses {
-		daysPastDue := int(time.Since(lic.UpdatedAt).Hours() / 24)
+		if lic.PastDueAt == nil {
+			continue
+		}
+		daysPastDue := int(now.Sub(*lic.PastDueAt).Hours() / 24)
 		productName := ""
 		if lic.Product != nil {
 			productName = lic.Product.Name
 		}
+		// Tag scope: per-episode. Encoding past_due_at's Unix epoch
+		// means the next past_due cycle for the same license gets a
+		// brand-new tag namespace.
+		episode := lic.PastDueAt.Unix()
 
-		var tag string
-		switch {
-		case daysPastDue >= 14 && daysPastDue < 15:
-			tag = "dunning_final"
-		case daysPastDue >= 7 && daysPastDue < 8:
-			tag = "dunning_second"
-		case daysPastDue >= 1 && daysPastDue < 2:
-			tag = "dunning_first"
-		default:
-			continue
+		for _, step := range steps {
+			if daysPastDue < step.minDays {
+				continue
+			}
+			tag := step.tag + ":" + strconvI64(episode)
+			if c.store.HasNotification(ctx, lic.ID, tag) {
+				break // already sent the highest-tier; nothing lower will fire
+			}
+			step.send(lic.Email, productName)
+			c.store.RecordNotification(ctx, lic.ID, tag)
+			c.logger.Info("dunning email sent",
+				"license_id", lic.ID, "tag", step.tag,
+				"days_past_due", daysPastDue, "episode", episode)
+			break // only one email per checker run per license
 		}
-
-		if c.store.HasNotification(ctx, lic.ID, tag) {
-			continue
-		}
-
-		switch tag {
-		case "dunning_first":
-			c.email.SendPaymentFailed(lic.Email, productName)
-		case "dunning_second":
-			c.email.SendDunningSecond(lic.Email, productName)
-		case "dunning_final":
-			c.email.SendDunningFinal(lic.Email, productName)
-		}
-
-		c.store.RecordNotification(ctx, lic.ID, tag)
-		c.logger.Info("dunning email sent", "license_id", lic.ID, "tag", tag, "days_past_due", daysPastDue)
 	}
 }
 
-// SendRenewalReminders notifies users 24 hours before renewal.
+// strconvI64 keeps the small helper local so the expiry file stays
+// self-contained. Tagging on epoch ints avoids any timezone / DST
+// drift you'd get from a date-string anchor.
+func strconvI64(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+// SendRenewalReminders notifies users in the 24 hours leading up to
+// renewal. We scan a wide [now, now+25h] window and dedup with the
+// "renewal_24h" tag so a server outage during the narrow original
+// 23-25h window doesn't silently skip the email.
 func (c *ExpiryChecker) SendRenewalReminders(ctx context.Context) {
-	from := time.Now().Add(23 * time.Hour)
+	from := time.Now()
 	to := time.Now().Add(25 * time.Hour)
 	licenses, err := c.store.FindExpiringLicenses(ctx, from, to)
 	if err != nil {

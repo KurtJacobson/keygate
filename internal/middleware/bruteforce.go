@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -114,12 +115,17 @@ func LicenseBruteForceGuard(bf *BruteForceProtection) gin.HandlerFunc {
 		blocked, retryAfter := bf.IsBlocked(ip)
 		if blocked {
 			BruteForceBlocks.Inc()
+			// retry_after lives in `error.details` (NOT alongside
+			// code/message) so the response shape stays the canonical
+			// envelope: { success, error: { code, message, details? } }.
+			retrySec := int(retryAfter.Seconds())
+			c.Header("Retry-After", fmt.Sprintf("%d", retrySec))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"success": false,
 				"error": gin.H{
-					"code":        "LOCKED_OUT",
-					"message":     "too many failed attempts, please try again later",
-					"retry_after": int(retryAfter.Seconds()),
+					"code":    "LOCKED_OUT",
+					"message": "too many failed attempts, please try again later",
+					"details": gin.H{"retry_after": retrySec},
 				},
 			})
 			return

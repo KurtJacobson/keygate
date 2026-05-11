@@ -1,11 +1,20 @@
 const BASE = `${import.meta.env.VITE_API_URL || ""}/api/v1`
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(BASE + path, {
-    credentials: "include",
-    headers: { "Content-Type": "application/json", ...opts?.headers },
-    ...opts,
-  })
+  let res: Response
+  try {
+    res = await fetch(BASE + path, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...opts?.headers },
+      ...opts,
+    })
+  } catch (e) {
+    // Network-level failure (server down, DNS, CORS). fetch() throws
+    // a TypeError here; we surface a friendly message instead of
+    // "Failed to fetch" which is meaningless to end users.
+    const reason = e instanceof Error ? e.message : String(e)
+    throw new Error(`Network error: ${reason}. Is the server reachable?`)
+  }
 
   // Handle session expiry: redirect to login on 401
   if (res.status === 401) {
@@ -17,11 +26,30 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   }
 
   if (res.status === 204) return undefined as T
-  const json = await res.json()
-  if (!res.ok) {
-    throw new Error(json?.error?.message || json?.error || `Request failed: ${res.status}`)
+
+  // Read the body as text first so an empty or non-JSON response (502
+  // from a proxy, server crash mid-response, HTML error page, etc.)
+  // doesn't produce the cryptic "Unexpected end of JSON input" — that
+  // error confuses users who clicked a normal button.
+  const raw = await res.text()
+  let json: any = null
+  if (raw) {
+    try {
+      json = JSON.parse(raw)
+    } catch {
+      // body wasn't JSON — keep `json` null, fall through to text path
+    }
   }
-  return json.data !== undefined ? json.data : json
+
+  if (!res.ok) {
+    const msg =
+      json?.error?.message ||
+      (typeof json?.error === "string" ? json.error : null) ||
+      (raw && raw.length < 200 ? raw : null) ||
+      `Request failed (${res.status}${res.statusText ? ` ${res.statusText}` : ""})`
+    throw new Error(msg)
+  }
+  return (json?.data !== undefined ? json.data : json) as T
 }
 
 function get<T>(path: string) {
@@ -32,6 +60,10 @@ function post<T>(path: string, body?: unknown) {
 }
 function put<T>(path: string, body?: unknown) {
   return request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined })
+}
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function patch<T>(path: string, body?: unknown) {
+  return request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined })
 }
 function del<T>(path: string) {
   return request<T>(path, { method: "DELETE" })
@@ -62,6 +94,18 @@ export const checkout = {
   verify: (sessionId: string) => get<{ status: string; email?: string }>(`/checkout/verify?session_id=${sessionId}`),
 }
 
+// ─── Invites (public, token-only) ───
+// The plain invite token IS the email-ownership proof — no session
+// required. Backend collapses bad/expired/already-accepted into one
+// generic error so an attacker can't probe token validity.
+export const invites = {
+  accept: (token: string) =>
+    post<{ user_id: string; email: string; license_id: string; product_name?: string; role: string }>(
+      "/invites/accept",
+      { token },
+    ),
+}
+
 // ─── Portal ───
 export const portal = {
   licenses: () => get<{ licenses: License[] }>("/portal/licenses"),
@@ -70,18 +114,24 @@ export const portal = {
     put<{ id: string; email: string; name: string; avatar_url: string; role: string }>("/portal/profile", data),
   recordUsage: (data: { license_key: string; feature: string; quantity?: number }) => post<any>("/portal/usage", data),
   quotaStatus: (data: { license_key: string; feature: string }) => post<any>("/portal/usage/status", data),
-  listSeats: (data: { license_key: string }) => post<{ seats: Seat[] }>("/portal/seats", data),
+  // Customer-facing team management for multi-seat plans. Session-
+  // authed (cookie); the body's license_key only names the target
+  // license — the cookie is the actual authentication.
+  listSeats: (licenseKey: string) => post<{ seats: Seat[] }>("/portal/seats", { license_key: licenseKey }),
   addSeat: (data: { license_key: string; email: string; role?: string }) => post<Seat>("/portal/seats/add", data),
-  removeSeat: (data: { license_key: string; seat_id: string }) => post<any>("/portal/seats/remove", data),
+  removeSeat: (data: { license_key: string; seat_id: string }) =>
+    post<{ status: string }>("/portal/seats/remove", data),
   changePlan: (data: { license_id: string; new_price_id: string; prorate?: boolean }) =>
     post<{ status: string; new_plan_id: string; new_plan_name: string; proration: string }>(
-      "/subscription/change-plan",
+      "/portal/subscription/change-plan",
       data,
     ),
   cancelSubscription: (data: { license_id: string; immediate?: boolean }) =>
-    post<{ status: string; immediate: boolean }>("/subscription/cancel", data),
-  getBillingPortal: (data: { license_id: string }) => post<{ url: string }>("/subscription/billing-portal", data),
-  getInvoices: (licenseId: string) => get<{ invoices: Invoice[] }>(`/subscription/invoices?license_id=${licenseId}`),
+    post<{ status: string; immediate: boolean }>("/portal/subscription/cancel", data),
+  getBillingPortal: (data: { license_id: string }) =>
+    post<{ url: string }>("/portal/subscription/billing-portal", data),
+  getInvoices: (licenseId: string) =>
+    get<{ invoices: Invoice[] }>(`/portal/subscription/invoices?license_id=${licenseId}`),
 }
 
 // ─── Admin ───
@@ -118,6 +168,8 @@ export const admin = {
     product_id?: string
     status?: string
     search?: string
+    external_customer_id?: string
+    external_workspace_id?: string
     offset?: number
     limit?: number
   }) => {
@@ -125,13 +177,21 @@ export const admin = {
     if (params?.product_id) q.set("product_id", params.product_id)
     if (params?.status) q.set("status", params.status)
     if (params?.search) q.set("search", params.search)
+    if (params?.external_customer_id) q.set("external_customer_id", params.external_customer_id)
+    if (params?.external_workspace_id) q.set("external_workspace_id", params.external_workspace_id)
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
     return get<{ licenses: License[]; total: number }>(`/admin/licenses?${q}`)
   },
   getLicense: (id: string) => get<License>(`/admin/licenses/${id}`),
-  createLicense: (data: { product_id: string; plan_id: string; email: string; notes?: string }) =>
-    post<License>("/admin/licenses", data),
+  createLicense: (data: {
+    product_id: string
+    plan_id: string
+    email: string
+    notes?: string
+    external_customer_id?: string
+    external_workspace_id?: string
+  }) => post<License>("/admin/licenses", data),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),
@@ -145,8 +205,9 @@ export const admin = {
     if (search) q.set("search", search)
     return get<{ api_keys: APIKey[] }>(`/admin/api-keys?${q}`)
   },
-  createAPIKey: (data: { product_id: string; name: string; scopes?: string[] }) =>
+  createAPIKey: (data: { product_id?: string; name: string; scopes?: string[] }) =>
     post<APIKey & { key: string }>("/admin/api-keys", data),
+  rotateAPIKey: (id: string) => post<APIKey & { key: string }>(`/admin/api-keys/${id}/rotate`, {}),
   deleteAPIKey: (id: string) => del(`/admin/api-keys/${id}`),
 
   listWebhooks: (productId?: string, search?: string) => {
@@ -159,12 +220,19 @@ export const admin = {
     post<WebhookConfig & { secret: string }>("/admin/webhooks", data),
   updateWebhook: (id: string, data: Partial<WebhookConfig>) => put<WebhookConfig>(`/admin/webhooks/${id}`, data),
   deleteWebhook: (id: string) => del(`/admin/webhooks/${id}`),
-  listWebhookDeliveries: (id: string, params?: { offset?: number; limit?: number }) => {
+  listWebhookDeliveries: (
+    id: string,
+    params?: { offset?: number; limit?: number; status?: string; event?: string },
+  ) => {
     const q = new URLSearchParams()
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
+    if (params?.status) q.set("status", params.status)
+    if (params?.event) q.set("event", params.event)
     return get<{ deliveries: WebhookDeliveryLog[]; total: number }>(`/admin/webhooks/${id}/deliveries?${q}`)
   },
+  resendWebhookDelivery: (webhookId: string, deliveryId: string) =>
+    post<WebhookDeliveryLog>(`/admin/webhooks/${webhookId}/deliveries/${deliveryId}/resend`),
   testWebhook: (id: string) => post(`/admin/webhooks/${id}/test`),
 
   getLicenseUsage: (id: string, params?: { feature?: string; offset?: number; limit?: number }) => {
@@ -262,10 +330,17 @@ export const admin = {
   getFloatingSessions: (id: string) =>
     get<{ sessions: FloatingSession[]; active: number }>(`/admin/licenses/${id}/floating`),
 
-  listAuditLogs: (params?: { entity?: string; entity_id?: string; offset?: number; limit?: number }) => {
+  listAuditLogs: (params?: {
+    entity?: string
+    entity_id?: string
+    product_id?: string
+    offset?: number
+    limit?: number
+  }) => {
     const q = new URLSearchParams()
     if (params?.entity) q.set("entity", params.entity)
     if (params?.entity_id) q.set("entity_id", params.entity_id)
+    if (params?.product_id) q.set("product_id", params.product_id)
     if (params?.offset) q.set("offset", String(params.offset))
     if (params?.limit) q.set("limit", String(params.limit))
     return get<{ audit_logs: AuditLog[]; total: number }>(`/admin/audit-logs?${q}`)
@@ -315,6 +390,67 @@ export const admin = {
       checked_at?: string
     }>("/admin/system/update-check"),
   getMigrations: () => get<{ migrations: { filename: string; applied_at: string }[] }>("/admin/system/migrations"),
+
+  // ─── Releases (industry-standard bundle model) ───
+  listReleases: (params?: {
+    product_id?: string
+    channel?: string
+    status?: string
+    limit?: number
+    offset?: number
+  }) => {
+    const q = new URLSearchParams()
+    if (params?.product_id) q.set("product_id", params.product_id)
+    if (params?.channel) q.set("channel", params.channel)
+    if (params?.status) q.set("status", params.status)
+    if (params?.limit) q.set("limit", String(params.limit))
+    if (params?.offset) q.set("offset", String(params.offset))
+    return get<{ releases: Release[]; total: number; limit: number; offset: number }>(`/admin/releases?${q}`)
+  },
+  getRelease: (id: string) => get<Release>(`/admin/releases/${id}`),
+  createRelease: (data: {
+    product_id: string
+    version: string
+    channel?: string
+    name?: string
+    release_notes?: string
+  }) => post<Release>("/admin/releases", data),
+  addArtifact: (
+    releaseId: string,
+    data: {
+      platform: string
+      content_type?: string
+      expected_size?: number
+      filename?: string
+    },
+  ) =>
+    post<{ artifact: ReleaseArtifact; upload_url: string; expires_at: string }>(
+      `/admin/releases/${releaseId}/artifacts`,
+      data,
+    ),
+  finalizeArtifact: (releaseId: string, artifactId: string, data: { sha256: string }) =>
+    post<ReleaseArtifact>(`/admin/releases/${releaseId}/artifacts/${artifactId}/finalize`, data),
+  deleteArtifact: (releaseId: string, artifactId: string) =>
+    del(`/admin/releases/${releaseId}/artifacts/${artifactId}`),
+  publishRelease: (id: string) => post<Release>(`/admin/releases/${id}/actions/publish`),
+  yankRelease: (id: string, reason: string) => post<Release>(`/admin/releases/${id}/actions/yank`, { reason }),
+  unyankRelease: (id: string) => post<Release>(`/admin/releases/${id}/actions/unyank`),
+  updateReleaseNotes: (id: string, data: { name?: string; release_notes?: string }) =>
+    patch<Release>(`/admin/releases/${id}`, data),
+  deleteRelease: (id: string) => del(`/admin/releases/${id}`),
+
+  // ─── Release signing keys (per product) ───
+  listSigningKeys: (productId: string) =>
+    get<{ keys: ReleaseSigningKey[] }>(`/admin/products/${productId}/signing-keys`),
+  generateSigningKey: (productId: string) => post<ReleaseSigningKey>(`/admin/products/${productId}/signing-key`),
+  rotateSigningKey: (productId: string, note: string) =>
+    post<ReleaseSigningKey>(`/admin/products/${productId}/signing-key/rotate`, { note }),
+  deactivateSigningKey: (productId: string, note: string) =>
+    request<{ status: string }>(`/admin/products/${productId}/signing-key`, {
+      method: "DELETE",
+      body: JSON.stringify({ note }),
+    }),
+  publicKeyURL: (productId: string) => `${BASE}/admin/products/${productId}/signing-key/public.pem`,
 }
 
 // ─── Types ───
@@ -334,6 +470,9 @@ export interface Product {
   name: string
   slug: string
   type: string
+  minimum_supported_version?: string
+  minimum_supported_message?: string
+  require_signing: boolean
   created_at: string
 }
 
@@ -384,6 +523,8 @@ export interface License {
   suspended_at?: string
   org_name?: string
   notes?: string
+  external_customer_id?: string
+  external_workspace_id?: string
   created_at: string
   updated_at: string
   product?: Product
@@ -411,6 +552,7 @@ export interface APIKey {
   prefix: string
   scopes: string[]
   last_used?: string
+  last_used_ip?: string
   created_at: string
   product?: Product
 }
@@ -691,3 +833,59 @@ export interface UserDetail {
   activations: number
   recent_audit_logs: AuditLog[]
 }
+
+// Release: a logical version event for a product. Contains many platform
+// artifacts. Lifecycle status is on the release; yank affects all artifacts.
+export interface Release {
+  id: string
+  product_id: string
+  version: string
+  channel: "stable" | "beta" | "alpha" | "dev"
+  name: string
+  release_notes: string
+  status: "draft" | "published" | "yanked"
+  yanked_reason?: string
+  published_at?: string
+  yanked_at?: string
+  created_at: string
+  updated_at: string
+  product?: Product
+  artifacts?: ReleaseArtifact[]
+}
+
+// ReleaseArtifact: per-platform binary inside a Release.
+export interface ReleaseArtifact {
+  id: string
+  release_id: string
+  platform: string
+  file_key: string
+  file_size: number
+  sha256: string
+  ed25519_sig: string
+  content_type: string
+  signing_key_id?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ReleaseSigningKey {
+  id: string
+  product_id: string
+  public_key: string
+  active: boolean
+  note?: string
+  created_at: string
+  rotated_at?: string
+}
+
+export const RELEASE_PLATFORMS = [
+  "darwin-arm64",
+  "darwin-x64",
+  "windows-arm64",
+  "windows-x64",
+  "linux-arm64",
+  "linux-x64",
+  "linux-armhf",
+] as const
+
+export const RELEASE_CHANNELS = ["stable", "beta", "alpha", "dev"] as const

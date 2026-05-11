@@ -1,6 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AlertCircle, Check, Copy, Key, Plus, Trash2, Users } from "lucide-react"
+import { Check, Copy, Key, Trash2 } from "lucide-react"
 import { useState } from "react"
+import { showToast } from "@/components/toast"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,7 +22,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth } from "@/hooks/use-auth"
 import { useI18n } from "@/i18n"
-import { type Entitlement, type License, portal } from "@/lib/api"
+import { type Entitlement, type License, portal, type Seat } from "@/lib/api"
 import { cn, formatDate, statusColor } from "@/lib/utils"
 
 export default function PortalLicensesPage() {
@@ -67,7 +77,13 @@ function LicenseCard({ license: lic }: { license: License }) {
   const [showChangePlan, setShowChangePlan] = useState(false)
   const [showCancel, setShowCancel] = useState(false)
   const productType = lic.product?.type || "perpetual"
-  const showUsageAndSeats = productType === "saas" || productType === "hybrid"
+  const showUsage = productType === "saas" || productType === "hybrid"
+  // Seats UI shows for any plan that *could* have more than one seat.
+  // Backend treats max_seats=0 as "no limit", so the only case we hide
+  // is max_seats=1 (true single-seat). Perpetual products don't have
+  // a portal-managed team, so gate on product type too.
+  const seatCap = lic.plan?.max_seats ?? 0
+  const showSeats = (productType === "saas" || productType === "hybrid") && seatCap !== 1
 
   const copyKey = () => {
     navigator.clipboard.writeText(lic.license_key)
@@ -84,7 +100,7 @@ function LicenseCard({ license: lic }: { license: License }) {
     }
   }
 
-  const defaultTab = showUsageAndSeats ? "overview" : "overview"
+  const defaultTab = "overview"
 
   return (
     <Card>
@@ -123,12 +139,10 @@ function LicenseCard({ license: lic }: { license: License }) {
               {lic.activations?.length || 0} / {lic.plan?.max_activations || "-"}
             </p>
           </div>
-          {showUsageAndSeats && (
+          {showSeats && (
             <div>
-              <p className="text-muted-foreground">{t("portal.teamMembers")}</p>
-              <p className="font-medium">
-                {lic.seats?.filter((s) => !s.removed_at).length || 0} / {lic.plan?.max_seats || "-"}
-              </p>
+              <p className="text-muted-foreground">{t("licenses.seats")}</p>
+              <p className="font-medium">{seatCap === 0 ? t("common.unlimited") : seatCap}</p>
             </div>
           )}
         </div>
@@ -168,8 +182,8 @@ function LicenseCard({ license: lic }: { license: License }) {
           <TabsList>
             <TabsTrigger value="overview">{t("licenses.activations")}</TabsTrigger>
             <TabsTrigger value="entitlements">{t("plans.entitlements")}</TabsTrigger>
-            {showUsageAndSeats && <TabsTrigger value="usage">{t("analytics.usage")}</TabsTrigger>}
-            {showUsageAndSeats && <TabsTrigger value="seats">{t("licenses.seats")}</TabsTrigger>}
+            {showUsage && <TabsTrigger value="usage">{t("analytics.usage")}</TabsTrigger>}
+            {showSeats && <TabsTrigger value="seats">{t("portal.teamMembers")}</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
@@ -180,13 +194,13 @@ function LicenseCard({ license: lic }: { license: License }) {
             <EntitlementsSection entitlements={lic.plan?.entitlements || []} />
           </TabsContent>
 
-          {showUsageAndSeats && (
+          {showUsage && (
             <TabsContent value="usage" className="mt-4">
               <QuotaUsageSection license={lic} />
             </TabsContent>
           )}
 
-          {showUsageAndSeats && (
+          {showSeats && (
             <TabsContent value="seats" className="mt-4">
               <SeatsSection license={lic} />
             </TabsContent>
@@ -267,6 +281,226 @@ function EntitlementsSection({ entitlements }: { entitlements: Entitlement[] }) 
   )
 }
 
+function SeatsSection({ license }: { license: License }) {
+  const { t } = useI18n()
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  const [showInvite, setShowInvite] = useState(false)
+  const [removing, setRemoving] = useState<Seat | null>(null)
+
+  const seatsQuery = useQuery({
+    queryKey: ["portal", "seats", license.id],
+    queryFn: () => portal.listSeats(license.license_key),
+  })
+
+  const removeMut = useMutation({
+    mutationFn: (seatId: string) => portal.removeSeat({ license_key: license.license_key, seat_id: seatId }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portal", "seats", license.id] })
+      setRemoving(null)
+    },
+    // Errors surface via the global MutationCache toast handler in
+    // main.tsx — no per-mutation onError needed, else we'd double-
+    // toast. Just close the dialog on failure so the row stays put.
+    onSettled: () => {
+      setRemoving(null)
+    },
+  })
+
+  const seats = seatsQuery.data?.seats || []
+  const activeCount = seats.filter((s) => !s.removed_at).length
+  // maxSeats=0 means "no limit" per backend (internal/store/seats.go:81);
+  // never gate the Add button in that case.
+  const maxSeats = license.plan?.max_seats ?? 0
+  const atLimit = maxSeats > 0 && activeCount >= maxSeats
+
+  // canManage mirrors backend portalSeatMutationGuard: the license
+  // owner (matched by email, case-insensitive) OR an accepted seat
+  // with role=admin. Members and unaccepted invites only see the
+  // roster; hiding the buttons prevents the "click → mystery 404 →
+  // generic toast" UX failure mode.
+  const myEmail = user?.email?.toLowerCase() ?? ""
+  const isLicenseOwner = !!myEmail && license.email?.toLowerCase() === myEmail
+  const mySeat = seats.find((s) => s.email.toLowerCase() === myEmail && !s.removed_at)
+  const isAcceptedAdmin = !!mySeat?.accepted_at && mySeat.role === "admin"
+  const canManage = isLicenseOwner || isAcceptedAdmin
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">
+          {t("portal.teamMembers")} ({activeCount}/{maxSeats === 0 ? t("common.unlimitedSymbol") : maxSeats})
+        </p>
+        {canManage && (
+          <Button size="sm" disabled={atLimit} onClick={() => setShowInvite(true)}>
+            {t("portal.addMember")}
+          </Button>
+        )}
+      </div>
+
+      {canManage && atLimit && <p className="text-xs text-muted-foreground">{t("portal.seatLimit")}</p>}
+
+      {seatsQuery.isLoading ? (
+        <div className="h-16 animate-pulse bg-muted rounded-lg" />
+      ) : seats.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noMembers")}</p>
+      ) : (
+        <div className="space-y-2">
+          {seats.map((s) => (
+            <SeatRow
+              key={s.id}
+              seat={s}
+              canManage={canManage}
+              onRemove={() => setRemoving(s)}
+              isRemoving={removeMut.isPending && removeMut.variables === s.id}
+            />
+          ))}
+        </div>
+      )}
+
+      {showInvite && <InviteSeatDialog license={license} onClose={() => setShowInvite(false)} />}
+
+      <AlertDialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("portal.removeMemberTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("portal.removeMemberDesc").replace("{email}", removing?.email || "")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => removing && removeMut.mutate(removing.id)}
+            >
+              {t("portal.removeMember")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  )
+}
+
+function SeatRow({
+  seat,
+  canManage,
+  onRemove,
+  isRemoving,
+}: {
+  seat: Seat
+  canManage: boolean
+  onRemove: () => void
+  isRemoving: boolean
+}) {
+  const { t } = useI18n()
+  const accepted = !!seat.accepted_at
+  return (
+    <div className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-medium truncate">{seat.email}</span>
+          <Badge variant="secondary" className="text-xs capitalize">
+            {seat.role === "admin" ? t("portal.roleAdmin") : t("portal.roleMember")}
+          </Badge>
+          {!accepted && (
+            <Badge variant="outline" className="text-xs">
+              {t("licenses.invited")}
+            </Badge>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {accepted ? `${t("portal.lastVerified")} ${formatDate(seat.accepted_at!)}` : formatDate(seat.invited_at)}
+        </p>
+      </div>
+      {canManage && (
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 shrink-0 text-destructive"
+          disabled={isRemoving}
+          onClick={onRemove}
+          aria-label={t("portal.removeMember")}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
+function InviteSeatDialog({ license, onClose }: { license: License; onClose: () => void }) {
+  const { t } = useI18n()
+  const qc = useQueryClient()
+  const [email, setEmail] = useState("")
+  const [role, setRole] = useState<"member" | "admin">("member")
+
+  const inviteMut = useMutation({
+    mutationFn: () => portal.addSeat({ license_key: license.license_key, email: email.trim(), role }),
+    onSuccess: () => {
+      showToast(t("licenses.seatInviteSent"))
+      qc.invalidateQueries({ queryKey: ["portal", "seats", license.id] })
+      onClose()
+    },
+  })
+
+  const trimmed = email.trim()
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)
+  const canSubmit = isEmail && !inviteMut.isPending
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("licenses.inviteTitle")}</DialogTitle>
+          <DialogDescription>{t("licenses.inviteDesc")}</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="invite-email">{t("common.email")}</Label>
+            <Input
+              id="invite-email"
+              type="email"
+              autoComplete="off"
+              autoFocus
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="teammate@example.com"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && canSubmit) inviteMut.mutate()
+              }}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="invite-role">{t("team.role")}</Label>
+            <Select value={role} onValueChange={(v) => setRole(v as "member" | "admin")}>
+              <SelectTrigger id="invite-role">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="member">{t("portal.roleMember")}</SelectItem>
+                <SelectItem value="admin">{t("portal.roleAdmin")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={onClose}>
+              {t("common.cancel")}
+            </Button>
+            <Button disabled={!canSubmit} onClick={() => inviteMut.mutate()}>
+              {t("licenses.sendInvite")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 function QuotaUsageSection({ license }: { license: License }) {
   const quotaEntitlements = (license.plan?.entitlements || []).filter((e) => e.value_type === "quota")
 
@@ -321,151 +555,6 @@ function QuotaBar({ entitlement, licenseKey }: { entitlement: Entitlement; licen
           {entitlement.quota_unit} per {entitlement.quota_period || "period"}
         </p>
       )}
-    </div>
-  )
-}
-
-function SeatsSection({ license }: { license: License }) {
-  const { t } = useI18n()
-  const { user } = useAuth()
-  const queryClient = useQueryClient()
-  const [addDialogOpen, setAddDialogOpen] = useState(false)
-  const [newEmail, setNewEmail] = useState("")
-  const [newRole, setNewRole] = useState("member")
-
-  const { data: seatsData, isLoading } = useQuery({
-    queryKey: ["portal", "seats", license.license_key],
-    queryFn: () => portal.listSeats({ license_key: license.license_key }),
-  })
-
-  const seats = seatsData?.seats?.filter((s) => !s.removed_at) || []
-  const maxSeats = license.plan?.max_seats || 0
-  const canAddSeat = maxSeats === 0 || seats.length < maxSeats
-
-  const currentSeat = seats.find((s) => s.user_id === user?.id || s.email === user?.email)
-  const isOwnerOrAdmin = currentSeat?.role === "owner" || currentSeat?.role === "admin" || license.email === user?.email
-
-  const addMutation = useMutation({
-    mutationFn: (data: { email: string; role: string }) =>
-      portal.addSeat({ license_key: license.license_key, email: data.email, role: data.role }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portal", "seats", license.license_key] })
-      setAddDialogOpen(false)
-      setNewEmail("")
-      setNewRole("member")
-    },
-  })
-
-  const removeMutation = useMutation({
-    mutationFn: (seatId: string) => portal.removeSeat({ license_key: license.license_key, seat_id: seatId }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["portal", "seats", license.license_key] })
-    },
-  })
-
-  if (isLoading) {
-    return <div className="h-24 animate-pulse bg-muted rounded-lg" />
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium">
-          {t("portal.teamMembers")} ({seats.length}
-          {maxSeats > 0 ? ` / ${maxSeats}` : ""})
-        </p>
-        {isOwnerOrAdmin && canAddSeat && (
-          <Button size="sm" variant="outline" onClick={() => setAddDialogOpen(true)}>
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            {t("portal.addMember")}
-          </Button>
-        )}
-      </div>
-
-      {seats.length === 0 ? (
-        <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noMembers")}</p>
-      ) : (
-        <div className="space-y-2">
-          {seats.map((seat) => (
-            <div key={seat.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
-              <div className="flex items-center gap-3">
-                <Users className="h-4 w-4 text-muted-foreground shrink-0" />
-                <div>
-                  <p className="font-medium">{seat.email}</p>
-                  <p className="text-xs text-muted-foreground">
-                    <Badge variant="secondary" className="text-[10px] mr-1">
-                      {seat.role}
-                    </Badge>
-                    Joined {formatDate(seat.accepted_at || seat.created_at)}
-                  </p>
-                </div>
-              </div>
-              {isOwnerOrAdmin && seat.role !== "owner" && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                  onClick={() => removeMutation.mutate(seat.id)}
-                  disabled={removeMutation.isPending}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!canAddSeat && isOwnerOrAdmin && (
-        <div className="flex items-center gap-2 text-xs text-amber-600 bg-amber-50 rounded px-3 py-2">
-          <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          {t("portal.seatLimit")}
-        </div>
-      )}
-
-      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("portal.addMember")}</DialogTitle>
-            <DialogDescription>{t("portal.inviteDesc")}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label htmlFor="seat-email">{t("common.email")}</Label>
-              <Input
-                id="seat-email"
-                type="email"
-                placeholder="colleague@example.com"
-                value={newEmail}
-                onChange={(e) => setNewEmail(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="seat-role">{t("licenses.role")}</Label>
-              <Select value={newRole} onValueChange={setNewRole}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="member">{t("portal.roleMember")}</SelectItem>
-                  <SelectItem value="admin">{t("portal.roleAdmin")}</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={() => setAddDialogOpen(false)}>
-              {t("common.cancel")}
-            </Button>
-            <Button
-              onClick={() => addMutation.mutate({ email: newEmail, role: newRole })}
-              disabled={!newEmail || addMutation.isPending}
-            >
-              {addMutation.isPending ? t("common.loading") : t("portal.addMember")}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

@@ -147,57 +147,80 @@ export default function PlansPage() {
                     <DataTableHead>{t("common.product")}</DataTableHead>
                     <DataTableHead>{t("plans.licenseType")}</DataTableHead>
                     <DataTableHead>{t("plans.maxActivations")}</DataTableHead>
+                    <DataTableHead>{t("plans.maxSeats")}</DataTableHead>
                     <DataTableHead>{t("common.status")}</DataTableHead>
                     <DataTableHead>{t("common.created")}</DataTableHead>
                     <DataTableHead className="w-24" />
                   </DataTableRow>
                 </DataTableHeader>
                 <DataTableBody>
-                  {plans.length === 0 && <DataTableEmpty colSpan={7} message={t("plans.empty")} />}
-                  {paginatedItems.map((p) => (
-                    <DataTableRow key={p.id}>
-                      <DataTableCell className="font-medium">{p.name}</DataTableCell>
-                      <DataTableCell className="text-muted-foreground">
-                        {products.find((pr) => pr.id === p.product_id)?.name || p.product_id}
-                      </DataTableCell>
-                      <DataTableCell>
-                        <Badge variant="secondary">{p.license_type}</Badge>
-                      </DataTableCell>
-                      <DataTableCell>{p.max_activations}</DataTableCell>
-                      <DataTableCell>
-                        <Badge className={boolColor(p.active)}>
-                          {p.active ? t("common.active") : t("common.inactive")}
-                        </Badge>
-                      </DataTableCell>
-                      <DataTableCell className="text-muted-foreground text-xs">
-                        {formatDate(p.created_at)}
-                      </DataTableCell>
-                      <DataTableCell>
-                        <div className="flex gap-1">
-                          {p.checkout_id && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              title={t("plans.copyCheckoutLink")}
-                              onClick={() => {
-                                const url = `${window.location.origin}/pay/${p.checkout_id}`
-                                navigator.clipboard.writeText(url)
-                                showToast(t("plans.linkCopied"))
-                              }}
-                            >
-                              <Copy className="h-4 w-4" />
-                            </Button>
+                  {plans.length === 0 && <DataTableEmpty colSpan={8} message={t("plans.empty")} />}
+                  {paginatedItems.map((p) => {
+                    const prodType = products.find((pr) => pr.id === p.product_id)?.type
+                    const supportsActivations = prodType === "desktop" || prodType === "hybrid"
+                    const supportsSeats = prodType === "saas" || prodType === "hybrid"
+                    return (
+                      <DataTableRow key={p.id}>
+                        <DataTableCell className="font-medium">{p.name}</DataTableCell>
+                        <DataTableCell className="text-muted-foreground">
+                          {products.find((pr) => pr.id === p.product_id)?.name || p.product_id}
+                        </DataTableCell>
+                        <DataTableCell>
+                          <Badge variant="secondary">{p.license_type}</Badge>
+                        </DataTableCell>
+                        <DataTableCell>
+                          {supportsActivations ? (
+                            p.max_activations
+                          ) : (
+                            <span className="text-muted-foreground" title={t("plans.notApplicableForType")}>
+                              —
+                            </span>
                           )}
-                          <Button variant="ghost" size="icon" onClick={() => setEditing(p)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" onClick={() => setDeleting(p)}>
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </DataTableCell>
-                    </DataTableRow>
-                  ))}
+                        </DataTableCell>
+                        <DataTableCell>
+                          {supportsSeats ? (
+                            p.max_seats || 0
+                          ) : (
+                            <span className="text-muted-foreground" title={t("plans.notApplicableForType")}>
+                              —
+                            </span>
+                          )}
+                        </DataTableCell>
+                        <DataTableCell>
+                          <Badge className={boolColor(p.active)}>
+                            {p.active ? t("common.active") : t("common.inactive")}
+                          </Badge>
+                        </DataTableCell>
+                        <DataTableCell className="text-muted-foreground text-xs">
+                          {formatDate(p.created_at)}
+                        </DataTableCell>
+                        <DataTableCell>
+                          <div className="flex gap-1">
+                            {p.checkout_id && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                title={t("plans.copyCheckoutLink")}
+                                onClick={() => {
+                                  const url = `${window.location.origin}/pay/${p.checkout_id}`
+                                  navigator.clipboard.writeText(url)
+                                  showToast(t("plans.linkCopied"))
+                                }}
+                              >
+                                <Copy className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button variant="ghost" size="icon" onClick={() => setEditing(p)}>
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon" onClick={() => setDeleting(p)}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </DataTableCell>
+                      </DataTableRow>
+                    )
+                  })}
                 </DataTableBody>
               </DataTable>
               {total > 0 && (
@@ -274,7 +297,7 @@ function PlanDialog({
   open: boolean
   onClose: () => void
   plan?: Plan
-  products: { id: string; name: string }[]
+  products: { id: string; name: string; type?: string }[]
   onSubmit: (data: Partial<Plan>) => void
   loading: boolean
   title: string
@@ -290,11 +313,40 @@ function PlanDialog({
     max_seats: plan?.max_seats ?? 1,
     trial_days: plan?.trial_days ?? 0,
     grace_days: plan?.grace_days ?? 7,
+    license_model: plan?.license_model || "standard",
+    floating_timeout: plan?.floating_timeout ?? 30,
     active: plan?.active ?? true,
     stripe_price_id: plan?.stripe_price_id || "",
   })
 
   const set = (key: string, val: string | number | boolean) => setForm((f) => ({ ...f, [key]: val }))
+
+  // Capability map keyed by the currently-selected product's type.
+  // Mirrors backend model.ProductSupports — DO NOT diverge or admins
+  // will see fields the server then rejects on submit.
+  const selectedProduct = products.find((p) => p.id === form.product_id)
+  const productType = selectedProduct?.type || "hybrid"
+  const supports = {
+    activations: productType === "desktop" || productType === "hybrid",
+    seats: productType === "saas" || productType === "hybrid",
+  }
+
+  // When the product type doesn't expose a capability, force the
+  // corresponding numeric field to 0 on submit (avoids sending
+  // max_activations=3 for a saas product just because the form
+  // pre-filled it before the product was selected).
+  const handleSubmit = () => {
+    const payload: Partial<Plan> & Record<string, unknown> = { ...form }
+    if (!supports.activations) {
+      payload.max_activations = 0
+      payload.license_model = "standard"
+      payload.floating_timeout = 0
+    }
+    if (!supports.seats) {
+      payload.max_seats = 0
+    }
+    onSubmit(payload)
+  }
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -306,7 +358,7 @@ function PlanDialog({
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            onSubmit(form)
+            handleSubmit()
           }}
           className="space-y-4"
         >
@@ -322,10 +374,17 @@ function PlanDialog({
                   {products.map((p) => (
                     <SelectItem key={p.id} value={p.id}>
                       {p.name}
+                      {p.type ? <span className="ml-2 text-xs text-muted-foreground">[{p.type}]</span> : null}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {/* Capability hint — what this product type allows on plans */}
+              <p className="text-xs text-muted-foreground">
+                {productType === "desktop" && t("plans.hintDesktop")}
+                {productType === "saas" && t("plans.hintSaas")}
+                {productType === "hybrid" && t("plans.hintHybrid")}
+              </p>
             </div>
             <div className="space-y-2">
               <Label>{t("common.name")}</Label>
@@ -371,24 +430,53 @@ function PlanDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label>{t("plans.maxActivations")}</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.max_activations}
-                onChange={(e) => set("max_activations", Number(e.target.value))}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>{t("plans.maxSeats")}</Label>
-              <Input
-                type="number"
-                min={1}
-                value={form.max_seats}
-                onChange={(e) => set("max_seats", Number(e.target.value))}
-              />
-            </div>
+            {supports.activations && (
+              <div className="space-y-2">
+                <Label>{t("plans.maxActivations")}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.max_activations}
+                  onChange={(e) => set("max_activations", Number(e.target.value))}
+                />
+              </div>
+            )}
+            {supports.seats && (
+              <div className="space-y-2">
+                <Label>{t("plans.maxSeats")}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.max_seats}
+                  onChange={(e) => set("max_seats", Number(e.target.value))}
+                />
+              </div>
+            )}
+            {supports.activations && (
+              <div className="space-y-2">
+                <Label>{t("plans.licenseModel")}</Label>
+                <Select value={form.license_model} onValueChange={(v) => set("license_model", v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="standard">{t("plans.modelStandard")}</SelectItem>
+                    <SelectItem value="floating">{t("plans.modelFloating")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {supports.activations && form.license_model === "floating" && (
+              <div className="space-y-2">
+                <Label>{t("plans.floatingTimeout")}</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.floating_timeout}
+                  onChange={(e) => set("floating_timeout", Number(e.target.value))}
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label>{t("plans.trialDays")}</Label>
               <Input
@@ -459,7 +547,13 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
     value: "true",
     quota_period: "",
     quota_unit: "",
+    stripe_meter_event_name: "",
   })
+  // confirmDelete shows the AlertDialog with the feature name before
+  // the irreversible delete fires. The button used to call
+  // deleteMut.mutate(e.id) directly — a stray click wiped a plan
+  // entitlement with no recourse.
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; feature: string } | null>(null)
 
   useEffect(() => {
     setEntitlements(initial)
@@ -472,12 +566,32 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
         feature: newEnt.feature,
         value_type: newEnt.value_type,
         value: newEnt.value,
-        ...(newEnt.value_type === "quota" ? { quota_period: newEnt.quota_period, quota_unit: newEnt.quota_unit } : {}),
-      } as { plan_id: string; feature: string; value_type: string; value: string }),
+        ...(newEnt.value_type === "quota"
+          ? {
+              quota_period: newEnt.quota_period,
+              quota_unit: newEnt.quota_unit,
+              // Empty string means "no Stripe metered binding" —
+              // safe to always pass, server treats "" identically.
+              stripe_meter_event_name: newEnt.stripe_meter_event_name,
+            }
+          : {}),
+      } as {
+        plan_id: string
+        feature: string
+        value_type: string
+        value: string
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "plans"] })
       setAdding(false)
-      setNewEnt({ feature: "", value_type: "bool", value: "true", quota_period: "", quota_unit: "" })
+      setNewEnt({
+        feature: "",
+        value_type: "bool",
+        value: "true",
+        quota_period: "",
+        quota_unit: "",
+        stripe_meter_event_name: "",
+      })
     },
   })
 
@@ -485,6 +599,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
     mutationFn: (id: string) => admin.deleteEntitlement(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "plans"] })
+      setConfirmDelete(null)
     },
   })
 
@@ -517,7 +632,7 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                onClick={() => deleteMut.mutate(e.id)}
+                onClick={() => setConfirmDelete({ id: e.id, feature: e.feature })}
               >
                 <Trash2 className="h-3 w-3 text-destructive" />
               </Button>
@@ -585,6 +700,20 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
                     placeholder="e.g. requests, tokens"
                   />
                 </div>
+                {/* Optional Stripe Billing Meter binding. When non-empty,
+                    every RecordUsage call for this feature enqueues a
+                    meter event the background sync pushes to Stripe.
+                    Configure the meter (and event_name) in your Stripe
+                    dashboard first. */}
+                <div className="space-y-2 col-span-2">
+                  <Label className="text-xs">{t("plans.stripeMeterEventName")}</Label>
+                  <Input
+                    value={newEnt.stripe_meter_event_name}
+                    onChange={(e) => setNewEnt((n) => ({ ...n, stripe_meter_event_name: e.target.value }))}
+                    placeholder="api_calls (configured in Stripe dashboard)"
+                  />
+                  <p className="text-[10px] text-muted-foreground">{t("plans.stripeMeterEventNameHelp")}</p>
+                </div>
               </>
             )}
           </div>
@@ -603,6 +732,26 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
           </div>
         </div>
       )}
+
+      <AlertDialog open={!!confirmDelete} onOpenChange={() => setConfirmDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("plans.deleteEntitlementTitle", { feature: confirmDelete?.feature || "" })}
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("plans.deleteEntitlementDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => confirmDelete && deleteMut.mutate(confirmDelete.id)}
+            >
+              {t("common.delete")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

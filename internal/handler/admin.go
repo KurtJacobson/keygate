@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,10 +25,13 @@ import (
 type AdminHandler struct {
 	Store   *store.Store
 	Webhook *service.WebhookService
+	Email   *service.EmailService
+	Expiry  *service.ExpiryChecker
+	Metered *service.MeteredBillingSyncer
 }
 
-func NewAdminHandler(s *store.Store, wh *service.WebhookService) *AdminHandler {
-	return &AdminHandler{Store: s, Webhook: wh}
+func NewAdminHandler(s *store.Store, wh *service.WebhookService, em *service.EmailService, ex *service.ExpiryChecker, ms *service.MeteredBillingSyncer) *AdminHandler {
+	return &AdminHandler{Store: s, Webhook: wh, Email: em, Expiry: ex, Metered: ms}
 }
 
 // ─── Stats ───
@@ -106,9 +111,12 @@ func (h *AdminHandler) UpdateProduct(c *gin.Context) {
 	}
 
 	var req struct {
-		Name string `json:"name"`
-		Slug string `json:"slug"`
-		Type string `json:"type"`
+		Name                    string  `json:"name"`
+		Slug                    string  `json:"slug"`
+		Type                    string  `json:"type"`
+		MinimumSupportedVersion *string `json:"minimum_supported_version"`
+		MinimumSupportedMessage *string `json:"minimum_supported_message"`
+		RequireSigning          *bool   `json:"require_signing"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request body")
@@ -133,7 +141,43 @@ func (h *AdminHandler) UpdateProduct(c *gin.Context) {
 			response.BadRequest(c, "type must be desktop, saas, or hybrid")
 			return
 		}
+		// Only validate against existing plans when the type is
+		// actually changing. Re-saving the same type is a no-op.
+		if req.Type != p.Type {
+			n, err := h.Store.CountPlansIncompatibleWithType(c, p.ID, req.Type)
+			if err != nil {
+				response.Internal(c)
+				return
+			}
+			if n > 0 {
+				response.Err(c, http.StatusConflict, "INCOMPATIBLE_PLANS",
+					fmt.Sprintf("%d existing plan(s) use fields that are not valid for %s products; reset max_activations / max_seats / license_model on those plans first",
+						n, req.Type))
+				return
+			}
+		}
 		p.Type = req.Type
+	}
+	if req.MinimumSupportedVersion != nil {
+		v := strings.TrimSpace(*req.MinimumSupportedVersion)
+		if v != "" {
+			if err := apperr.ValidateSemver(v); err != nil {
+				response.BadRequest(c, err.Message)
+				return
+			}
+		}
+		p.MinimumSupportedVersion = v
+	}
+	if req.MinimumSupportedMessage != nil {
+		msg := strings.TrimSpace(*req.MinimumSupportedMessage)
+		if len(msg) > 1024 {
+			response.BadRequest(c, "minimum_supported_message must be ≤ 1024 chars")
+			return
+		}
+		p.MinimumSupportedMessage = msg
+	}
+	if req.RequireSigning != nil {
+		p.RequireSigning = *req.RequireSigning
 	}
 
 	if err := h.Store.UpdateProduct(c, p); err != nil {
@@ -218,18 +262,17 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		return
 	}
 
-	if req.MaxActivations > 10000 {
-		response.BadRequest(c, "max_activations cannot exceed 10000")
-		return
-	}
-	if req.TrialDays > 365 {
-		response.BadRequest(c, "trial_days cannot exceed 365")
+	if err := validatePlanNumericBounds(planBounds{
+		MaxActivations:  req.MaxActivations,
+		MaxSeats:        req.MaxSeats,
+		TrialDays:       req.TrialDays,
+		GraceDays:       req.GraceDays,
+		FloatingTimeout: req.FloatingTimeout,
+	}); err != nil {
+		response.BadRequest(c, err.Error())
 		return
 	}
 
-	if req.MaxActivations <= 0 {
-		req.MaxActivations = 3
-	}
 	if req.GraceDays <= 0 {
 		req.GraceDays = 7
 	}
@@ -245,6 +288,38 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 	floatingTimeout := req.FloatingTimeout
 	if floatingTimeout <= 0 {
 		floatingTimeout = 30
+	}
+
+	// Product-type capability gating. The product decides WHAT a plan
+	// can configure; price model (perpetual/subscription/trial) stays
+	// orthogonal. Example: a saas product's plan must not set
+	// max_activations (no per-device licensing). A desktop product's
+	// plan must not set max_seats. Hybrid allows both.
+	prod, err := h.Store.FindProductByID(c, req.ProductID)
+	if err != nil {
+		response.NotFound(c, "product not found")
+		return
+	}
+	if req.MaxActivations > 0 && !model.ProductSupports(prod.Type, model.CapActivations) {
+		response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+			"max_activations is not supported for "+prod.Type+" products (use a hybrid or desktop product)")
+		return
+	}
+	if req.MaxSeats > 0 && !model.ProductSupports(prod.Type, model.CapSeats) {
+		response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+			"max_seats is not supported for "+prod.Type+" products (use a hybrid or saas product)")
+		return
+	}
+	// Default MaxActivations only when the product supports activations.
+	// Otherwise leave it 0 (the column accepts zero and the runtime
+	// guards prevent activation-family endpoints from being called).
+	if req.MaxActivations <= 0 && model.ProductSupports(prod.Type, model.CapActivations) {
+		req.MaxActivations = 3
+	}
+	if licenseModel == "floating" && !model.ProductSupports(prod.Type, model.CapActivations) {
+		response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+			"floating license_model is not supported for "+prod.Type+" products")
+		return
 	}
 
 	p := &model.Plan{
@@ -290,14 +365,87 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		LicenseType     *string `json:"license_type"`
 		BillingInterval *string `json:"billing_interval"`
 		MaxActivations  *int    `json:"max_activations"`
+		MaxSeats        *int    `json:"max_seats"`
 		TrialDays       *int    `json:"trial_days"`
 		GraceDays       *int    `json:"grace_days"`
 		StripePriceID   *string `json:"stripe_price_id"`
+		LicenseModel    *string `json:"license_model"`
+		FloatingTimeout *int    `json:"floating_timeout"`
 		Active          *bool   `json:"active"`
 		SortOrder       *int    `json:"sort_order"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request body")
+		return
+	}
+
+	// Capability gating mirrors CreatePlan: validate against the parent
+	// product's type. Look up the product once.
+	prod, err := h.Store.FindProductByID(c, p.ProductID)
+	if err != nil {
+		response.Internal(c)
+		return
+	}
+	if req.MaxActivations != nil && *req.MaxActivations > 0 && !model.ProductSupports(prod.Type, model.CapActivations) {
+		response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+			"max_activations is not supported for "+prod.Type+" products")
+		return
+	}
+	if req.MaxSeats != nil && *req.MaxSeats > 0 && !model.ProductSupports(prod.Type, model.CapSeats) {
+		response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+			"max_seats is not supported for "+prod.Type+" products")
+		return
+	}
+	if req.LicenseModel != nil {
+		if *req.LicenseModel != "standard" && *req.LicenseModel != "floating" {
+			response.BadRequest(c, "license_model must be standard or floating")
+			return
+		}
+		if *req.LicenseModel == "floating" && !model.ProductSupports(prod.Type, model.CapActivations) {
+			response.Err(c, http.StatusBadRequest, "INCOMPATIBLE_PRODUCT_TYPE",
+				"floating license_model is not supported for "+prod.Type+" products")
+			return
+		}
+	}
+	// Mirror CreatePlan's license_type enum guard. Without this, an
+	// UPDATE could persist arbitrary strings (e.g. "free", "pro") that
+	// downstream branching (trial-only logic, billing routing) would
+	// silently treat as the default branch.
+	if req.LicenseType != nil {
+		switch *req.LicenseType {
+		case "subscription", "perpetual", "trial":
+		default:
+			response.BadRequest(c, "license_type must be subscription, perpetual, or trial")
+			return
+		}
+	}
+
+	// Numeric-range validation. Pull from the request when the
+	// field was provided, otherwise the existing row value (so a
+	// PATCH that doesn't touch a field doesn't accidentally reject
+	// a legacy value).
+	check := planBounds{
+		MaxActivations: p.MaxActivations, MaxSeats: p.MaxSeats,
+		TrialDays: p.TrialDays, GraceDays: p.GraceDays,
+		FloatingTimeout: p.FloatingTimeout,
+	}
+	if req.MaxActivations != nil {
+		check.MaxActivations = *req.MaxActivations
+	}
+	if req.MaxSeats != nil {
+		check.MaxSeats = *req.MaxSeats
+	}
+	if req.TrialDays != nil {
+		check.TrialDays = *req.TrialDays
+	}
+	if req.GraceDays != nil {
+		check.GraceDays = *req.GraceDays
+	}
+	if req.FloatingTimeout != nil {
+		check.FloatingTimeout = *req.FloatingTimeout
+	}
+	if err := validatePlanNumericBounds(check); err != nil {
+		response.BadRequest(c, err.Error())
 		return
 	}
 
@@ -316,6 +464,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	if req.MaxActivations != nil {
 		p.MaxActivations = *req.MaxActivations
 	}
+	if req.MaxSeats != nil {
+		p.MaxSeats = *req.MaxSeats
+	}
 	if req.TrialDays != nil {
 		p.TrialDays = *req.TrialDays
 	}
@@ -324,6 +475,12 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	}
 	if req.StripePriceID != nil {
 		p.StripePriceID = *req.StripePriceID
+	}
+	if req.LicenseModel != nil {
+		p.LicenseModel = *req.LicenseModel
+	}
+	if req.FloatingTimeout != nil {
+		p.FloatingTimeout = *req.FloatingTimeout
 	}
 	if req.Active != nil {
 		p.Active = *req.Active
@@ -357,12 +514,13 @@ func (h *AdminHandler) DeletePlan(c *gin.Context) {
 
 func (h *AdminHandler) CreateEntitlement(c *gin.Context) {
 	var req struct {
-		PlanID      string `json:"plan_id" binding:"required"`
-		Feature     string `json:"feature" binding:"required"`
-		ValueType   string `json:"value_type" binding:"required"`
-		Value       string `json:"value" binding:"required"`
-		QuotaPeriod string `json:"quota_period"`
-		QuotaUnit   string `json:"quota_unit"`
+		PlanID               string `json:"plan_id" binding:"required"`
+		Feature              string `json:"feature" binding:"required"`
+		ValueType            string `json:"value_type" binding:"required"`
+		Value                string `json:"value" binding:"required"`
+		QuotaPeriod          string `json:"quota_period"`
+		QuotaUnit            string `json:"quota_unit"`
+		StripeMeterEventName string `json:"stripe_meter_event_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "plan_id, feature, value_type, and value are required")
@@ -375,11 +533,19 @@ func (h *AdminHandler) CreateEntitlement(c *gin.Context) {
 		response.BadRequest(c, "value_type must be bool, int, string, quota, or flag")
 		return
 	}
+	// Meter event names only make sense for quota features — they
+	// describe how to bill incremental usage. Reject early so a
+	// boolean feature doesn't silently carry a useless field.
+	if req.StripeMeterEventName != "" && req.ValueType != "quota" {
+		response.BadRequest(c, "stripe_meter_event_name requires value_type=quota")
+		return
+	}
 
 	e := &model.Entitlement{
 		PlanID: req.PlanID, Feature: req.Feature,
 		ValueType: req.ValueType, Value: req.Value,
 		QuotaPeriod: req.QuotaPeriod, QuotaUnit: req.QuotaUnit,
+		StripeMeterEventName: req.StripeMeterEventName,
 	}
 	if err := h.Store.CreateEntitlement(c, e); err != nil {
 		response.Err(c, http.StatusConflict, "DUPLICATE", "entitlement already exists for this plan and feature")
@@ -395,11 +561,12 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Feature     *string `json:"feature"`
-		ValueType   *string `json:"value_type"`
-		Value       *string `json:"value"`
-		QuotaPeriod *string `json:"quota_period"`
-		QuotaUnit   *string `json:"quota_unit"`
+		Feature              *string `json:"feature"`
+		ValueType            *string `json:"value_type"`
+		Value                *string `json:"value"`
+		QuotaPeriod          *string `json:"quota_period"`
+		QuotaUnit            *string `json:"quota_unit"`
+		StripeMeterEventName *string `json:"stripe_meter_event_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "invalid request body")
@@ -419,6 +586,16 @@ func (h *AdminHandler) UpdateEntitlement(c *gin.Context) {
 	}
 	if req.QuotaUnit != nil {
 		e.QuotaUnit = *req.QuotaUnit
+	}
+	if req.StripeMeterEventName != nil {
+		// Same gate as CreatePlan: meter wiring requires quota
+		// semantics. Comparing against the post-merge ValueType in
+		// case the same request also flipped value_type.
+		if *req.StripeMeterEventName != "" && e.ValueType != "quota" {
+			response.BadRequest(c, "stripe_meter_event_name requires value_type=quota")
+			return
+		}
+		e.StripeMeterEventName = *req.StripeMeterEventName
 	}
 
 	if err := h.Store.UpdateEntitlement(c, e); err != nil {
@@ -448,17 +625,36 @@ func (h *AdminHandler) ListAPIKeys(c *gin.Context) {
 }
 
 func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
+	// product_id is OPTIONAL: leave empty for system-wide keys (used
+	// with the `admin` scope for operator scripts / CI/CD that need
+	// to manage all products). Per-product keys (future: licenses:read
+	// etc.) set product_id explicitly.
 	var req struct {
-		ProductID string   `json:"product_id" binding:"required"`
+		ProductID string   `json:"product_id"`
 		Name      string   `json:"name" binding:"required"`
 		Scopes    []string `json:"scopes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, "product_id and name are required")
+		response.BadRequest(c, "name is required")
 		return
+	}
+	if req.ProductID != "" {
+		if _, err := h.Store.FindProductByID(c, req.ProductID); err != nil {
+			response.NotFound(c, "product not found")
+			return
+		}
 	}
 	if err := apperr.ValidateName("name", req.Name); err != nil {
 		response.BadRequest(c, err.Message)
+		return
+	}
+	// Scope validation: reject typos at the boundary so an
+	// unintentional `licneses:write` doesn't become a useless key
+	// that's silently locked out of every route. Empty scopes are
+	// allowed and produce a fail-closed key (caller may want to set
+	// scopes later via rotate or by re-creating).
+	if err := validateScopes(req.Scopes); err != nil {
+		response.BadRequest(c, err.Error())
 		return
 	}
 
@@ -482,7 +678,7 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 	h.Store.Audit(c, &model.AuditLog{
 		Entity: "api_key", EntityID: ak.ID, Action: "created",
 		ActorType: "admin", ActorID: adminID(c),
-		Changes: map[string]any{"name": req.Name, "product_id": req.ProductID},
+		Changes: map[string]any{"name": req.Name, "product_id": req.ProductID, "scopes": req.Scopes},
 	})
 
 	response.Created(c, gin.H{
@@ -493,6 +689,92 @@ func (h *AdminHandler) CreateAPIKey(c *gin.Context) {
 		"prefix":     prefix,
 		"scopes":     ak.Scopes,
 		"created_at": ak.CreatedAt,
+	})
+}
+
+// planBounds carries the numeric fields that share the same range
+// rules across CreatePlan + UpdatePlan, so both paths can share one
+// validator. Zero is allowed everywhere (interpreted as "no limit"
+// or "use the column default"); negative is always invalid; upper
+// bounds are sized to "more than any plausible plan" so legitimate
+// callers don't trip them.
+type planBounds struct {
+	MaxActivations  int
+	MaxSeats        int
+	TrialDays       int
+	GraceDays       int
+	FloatingTimeout int // minutes
+}
+
+func validatePlanNumericBounds(b planBounds) error {
+	switch {
+	case b.MaxActivations < 0:
+		return fmt.Errorf("max_activations cannot be negative")
+	case b.MaxActivations > 10000:
+		return fmt.Errorf("max_activations cannot exceed 10000")
+	case b.MaxSeats < 0:
+		return fmt.Errorf("max_seats cannot be negative")
+	case b.MaxSeats > 100000:
+		return fmt.Errorf("max_seats cannot exceed 100000")
+	case b.TrialDays < 0:
+		return fmt.Errorf("trial_days cannot be negative")
+	case b.TrialDays > 365:
+		return fmt.Errorf("trial_days cannot exceed 365")
+	case b.GraceDays < 0:
+		return fmt.Errorf("grace_days cannot be negative")
+	case b.GraceDays > 365:
+		return fmt.Errorf("grace_days cannot exceed 365")
+	case b.FloatingTimeout < 0:
+		return fmt.Errorf("floating_timeout cannot be negative")
+	case b.FloatingTimeout > 1440:
+		return fmt.Errorf("floating_timeout cannot exceed 1440 minutes (1 day)")
+	}
+	return nil
+}
+
+// validateScopes rejects unknown scope strings. Keeping the check at
+// the boundary catches typos that would otherwise produce a silently
+// powerless key.
+func validateScopes(scopes []string) error {
+	for _, s := range scopes {
+		if !model.IsValidScope(s) {
+			return fmt.Errorf("unknown scope %q (valid: %v)", s, model.AllScopes())
+		}
+	}
+	return nil
+}
+
+// RotateAPIKey generates a new secret for an existing key. The old
+// secret stops working immediately — pre-launch we don't ship a
+// grace period because rolling two valid secrets at once doubles the
+// blast radius if either leaks during the rotation window.
+//
+// The key ID is stable so callers can update their config without
+// touching the row's name / scopes / product_id.
+func (h *AdminHandler) RotateAPIKey(c *gin.Context) {
+	id := c.Param("id")
+	ak, err := h.Store.FindAPIKeyByID(c, id)
+	if err != nil {
+		response.NotFound(c, "api key not found")
+		return
+	}
+	rawKey := store.GenerateRawAPIKey()
+	prefix := rawKey[:12]
+	if err := h.Store.RotateAPIKey(c, ak.ID, rawKey, prefix); err != nil {
+		response.Internal(c)
+		return
+	}
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "api_key", EntityID: ak.ID, Action: "rotated",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{"name": ak.Name},
+	})
+	response.OK(c, gin.H{
+		"id":     ak.ID,
+		"name":   ak.Name,
+		"key":    rawKey,
+		"prefix": prefix,
+		"scopes": ak.Scopes,
 	})
 }
 
@@ -512,9 +794,30 @@ func (h *AdminHandler) DeleteAPIKey(c *gin.Context) {
 // ─── Licenses ───
 
 func (h *AdminHandler) ListLicenses(c *gin.Context) {
-	licenses, total, err := h.Store.ListLicenses(c,
-		c.Query("product_id"), c.Query("status"), c.Query("search"),
-		queryInt(c, "offset", 0), queryInt(c, "limit", 50))
+	productID := c.Query("product_id")
+	// When the request comes from an API key bound to a specific
+	// product, override (or fill in) the product_id filter so the
+	// list can never leak rows from other products even when the
+	// caller forgets — or deliberately omits — the query param.
+	if v, ok := c.Get("api_key"); ok {
+		if ak, ok := v.(*model.APIKey); ok && ak != nil && ak.ProductID != "" {
+			if productID != "" && productID != ak.ProductID {
+				response.Err(c, http.StatusForbidden, "PRODUCT_SCOPE_MISMATCH",
+					"api_key is bound to a different product")
+				return
+			}
+			productID = ak.ProductID
+		}
+	}
+	licenses, total, err := h.Store.ListLicenses(c, store.LicenseListFilter{
+		ProductID:           productID,
+		Status:              c.Query("status"),
+		Search:              c.Query("search"),
+		ExternalCustomerID:  c.Query("external_customer_id"),
+		ExternalWorkspaceID: c.Query("external_workspace_id"),
+		Offset:              queryInt(c, "offset", 0),
+		Limit:               queryInt(c, "limit", 50),
+	})
 	if err != nil {
 		response.Internal(c)
 		return
@@ -523,9 +826,13 @@ func (h *AdminHandler) ListLicenses(c *gin.Context) {
 }
 
 func (h *AdminHandler) GetLicense(c *gin.Context) {
-	l, err := h.Store.FindLicenseByID(c, c.Param("id"))
+	id := c.Param("id")
+	l, err := h.Store.FindLicenseByID(c, id)
 	if err != nil {
 		response.NotFound(c, "license not found")
+		return
+	}
+	if !requireKeyProductScope(c, l.ProductID) {
 		return
 	}
 	response.OK(c, l)
@@ -533,10 +840,12 @@ func (h *AdminHandler) GetLicense(c *gin.Context) {
 
 func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	var req struct {
-		ProductID string `json:"product_id" binding:"required"`
-		PlanID    string `json:"plan_id" binding:"required"`
-		Email     string `json:"email" binding:"required"`
-		Notes     string `json:"notes"`
+		ProductID           string `json:"product_id" binding:"required"`
+		PlanID              string `json:"plan_id" binding:"required"`
+		Email               string `json:"email" binding:"required"`
+		Notes               string `json:"notes"`
+		ExternalCustomerID  string `json:"external_customer_id"`
+		ExternalWorkspaceID string `json:"external_workspace_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, plan_id, and email are required")
@@ -547,11 +856,37 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		response.BadRequest(c, appErr.Message)
 		return
 	}
+	// External IDs are opaque to Keygate but we cap their length to
+	// keep them index-friendly. 256 chars is comfortably above what
+	// any real identifier scheme produces (UUIDs, Stripe IDs, etc).
+	if len(req.ExternalCustomerID) > 256 {
+		response.BadRequest(c, "external_customer_id must be ≤ 256 chars")
+		return
+	}
+	if len(req.ExternalWorkspaceID) > 256 {
+		response.BadRequest(c, "external_workspace_id must be ≤ 256 chars")
+		return
+	}
 
 	// Look up plan first to determine license type and set appropriate fields
 	plan, err := h.Store.FindPlanByID(c, req.PlanID)
 	if err != nil {
 		response.NotFound(c, "plan not found")
+		return
+	}
+	// Plan/product consistency: a plan belongs to exactly one product
+	// (plans.product_id is FK + NOT NULL). Accepting a mismatched
+	// req.ProductID would persist a license whose product_id points
+	// at a product whose plans don't include this one — that breaks
+	// capability gating, billing routing, and every downstream join.
+	if plan.ProductID != req.ProductID {
+		response.Err(c, http.StatusBadRequest, "PLAN_PRODUCT_MISMATCH",
+			"plan does not belong to the requested product")
+		return
+	}
+	// API-key scoping: a key bound to product A can't mint a license
+	// for product B even if it carries licenses:write.
+	if !requireKeyProductScope(c, req.ProductID) {
 		return
 	}
 
@@ -561,12 +896,14 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	}
 
 	l := &model.License{
-		ProductID:  req.ProductID,
-		PlanID:     req.PlanID,
-		Email:      req.Email,
-		LicenseKey: license.GenerateKey(""),
-		Status:     status,
-		Notes:      req.Notes,
+		ProductID:           req.ProductID,
+		PlanID:              req.PlanID,
+		Email:               req.Email,
+		LicenseKey:          license.GenerateKey(""),
+		Status:              status,
+		Notes:               req.Notes,
+		ExternalCustomerID:  req.ExternalCustomerID,
+		ExternalWorkspaceID: req.ExternalWorkspaceID,
 	}
 
 	// Set valid_until for trial licenses
@@ -593,11 +930,25 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		})
 	}
 
+	// Email the customer their new license key. Best-effort: SMTP failure
+	// is logged inside SendLicenseCreated but doesn't fail the API call —
+	// the license is already persisted, and admin can resend manually.
+	if h.Email != nil && h.Email.IsConfigured() {
+		productName := ""
+		if prod, err := h.Store.FindProductByID(c, l.ProductID); err == nil {
+			productName = prod.Name
+		}
+		h.Email.SendLicenseCreated(req.Email, productName, plan.Name, l.LicenseKey)
+	}
+
 	response.Created(c, l)
 }
 
 func (h *AdminHandler) RevokeLicense(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	if err := h.Store.RevokeLicense(c, id); err != nil {
 		response.NotFound(c, err.Error())
 		return
@@ -621,6 +972,9 @@ func (h *AdminHandler) RefundLicense(c *gin.Context) {
 	lic, err := h.Store.FindLicenseByID(c, id)
 	if err != nil {
 		response.NotFound(c, "license not found")
+		return
+	}
+	if !requireKeyProductScope(c, lic.ProductID) {
 		return
 	}
 
@@ -662,6 +1016,9 @@ func (h *AdminHandler) RefundLicense(c *gin.Context) {
 
 func (h *AdminHandler) SuspendLicense(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	if err := h.Store.SuspendLicense(c, id); err != nil {
 		response.NotFound(c, err.Error())
 		return
@@ -670,11 +1027,18 @@ func (h *AdminHandler) SuspendLicense(c *gin.Context) {
 		Entity: "license", EntityID: id, Action: "suspended",
 		ActorType: "admin", ActorID: adminID(c),
 	})
-	if h.Webhook != nil {
-		if lic, err := h.Store.FindLicenseByID(c, id); err == nil {
+	if lic, err := h.Store.FindLicenseByID(c, id); err == nil {
+		if h.Webhook != nil {
 			h.Webhook.Dispatch(c, lic.ProductID, "license.suspended", map[string]any{
 				"license_id": id, "email": lic.Email,
 			})
+		}
+		if h.Email != nil && h.Email.IsConfigured() && lic.Email != "" {
+			productName := ""
+			if prod, perr := h.Store.FindProductByID(c, lic.ProductID); perr == nil {
+				productName = prod.Name
+			}
+			h.Email.SendLicenseSuspended(lic.Email, productName, "")
 		}
 	}
 	response.OK(c, gin.H{"status": "suspended"})
@@ -682,6 +1046,9 @@ func (h *AdminHandler) SuspendLicense(c *gin.Context) {
 
 func (h *AdminHandler) ReinstateLicense(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	if err := h.Store.ReinstateLicense(c, id); err != nil {
 		response.BadRequest(c, err.Error())
 		return
@@ -702,6 +1069,14 @@ func (h *AdminHandler) ReinstateLicense(c *gin.Context) {
 
 func (h *AdminHandler) DeleteActivation(c *gin.Context) {
 	id := c.Param("id")
+	pid, err := h.Store.GetActivationProductID(c, id)
+	if err != nil {
+		response.NotFound(c, "activation not found")
+		return
+	}
+	if !requireKeyProductScope(c, pid) {
+		return
+	}
 	if err := h.Store.DeleteActivationByID(c, id); err != nil {
 		response.Internal(c)
 		return
@@ -713,7 +1088,7 @@ func (h *AdminHandler) DeleteActivation(c *gin.Context) {
 
 func (h *AdminHandler) ListAuditLogs(c *gin.Context) {
 	logs, total, err := h.Store.ListAuditLogs(c,
-		c.Query("entity"), c.Query("entity_id"),
+		c.Query("entity"), c.Query("entity_id"), c.Query("product_id"),
 		queryInt(c, "offset", 0), queryInt(c, "limit", 50))
 	if err != nil {
 		response.Internal(c)
@@ -752,10 +1127,59 @@ func queryInt(c *gin.Context, key string, def int) int {
 	return def
 }
 
+// checkLicenseScope is the per-handler entry point for API-key
+// product scoping on license-id-bearing routes. Looks up the
+// license's product_id and defers to requireKeyProductScope. Returns
+// true on pass (caller continues); false after writing a 404 or 403
+// (caller must `return`).
+func (h *AdminHandler) checkLicenseScope(c *gin.Context, licenseID string) bool {
+	pid, err := h.Store.GetLicenseProductID(c, licenseID)
+	if err != nil {
+		// sql.ErrNoRows is the dominant failure here; surface as 404.
+		// Other DB errors are rare enough that 404 is still a safe
+		// answer — we'd hit them again in the real handler.
+		response.NotFound(c, "license not found")
+		return false
+	}
+	return requireKeyProductScope(c, pid)
+}
+
+// requireKeyProductScope blocks an API key bound to product A from
+// touching resources that belong to product B. Returns true to
+// continue, false after writing a 403 (caller should `return`).
+//
+//   - session auth → true (admin dashboards span all products)
+//   - api_key with empty product_id → true (system-wide key)
+//   - api_key with matching product_id → true
+//   - api_key with different product_id → 403 + false
+//
+// Call AFTER resolving the resource's product_id. Two-hop lookups
+// (e.g. seat → license → product) just pass the final product_id
+// here; this helper doesn't try to be clever.
+func requireKeyProductScope(c *gin.Context, resourceProductID string) bool {
+	v, ok := c.Get("api_key")
+	if !ok {
+		return true
+	}
+	ak, ok := v.(*model.APIKey)
+	if !ok || ak == nil || ak.ProductID == "" {
+		return true
+	}
+	if ak.ProductID == resourceProductID {
+		return true
+	}
+	response.Err(c, http.StatusForbidden, "PRODUCT_SCOPE_MISMATCH",
+		"api_key is bound to a different product")
+	return false
+}
+
 // ─── Usage (admin) ───
 
 func (h *AdminHandler) ListLicenseUsage(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	events, total, err := h.Store.ListUsageEvents(c, id, c.Query("feature"),
 		queryInt(c, "offset", 0), queryInt(c, "limit", 50))
 	if err != nil {
@@ -768,6 +1192,9 @@ func (h *AdminHandler) ListLicenseUsage(c *gin.Context) {
 
 func (h *AdminHandler) ResetLicenseUsage(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	var req struct {
 		Feature   string `json:"feature" binding:"required"`
 		Period    string `json:"period"`
@@ -801,6 +1228,9 @@ func (h *AdminHandler) ResetLicenseUsage(c *gin.Context) {
 
 func (h *AdminHandler) ListLicenseSeats(c *gin.Context) {
 	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	seats, err := h.Store.ListSeats(c, id)
 	if err != nil {
 		response.Internal(c)
@@ -1078,6 +1508,10 @@ func (h *AdminHandler) DeleteAddon(c *gin.Context) {
 }
 
 func (h *AdminHandler) AddLicenseAddon(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
 	var req struct {
 		AddonID string `json:"addon_id" binding:"required"`
 	}
@@ -1085,7 +1519,7 @@ func (h *AdminHandler) AddLicenseAddon(c *gin.Context) {
 		response.BadRequest(c, "addon_id is required")
 		return
 	}
-	la := &model.LicenseAddon{LicenseID: c.Param("id"), AddonID: req.AddonID, Enabled: true}
+	la := &model.LicenseAddon{LicenseID: id, AddonID: req.AddonID, Enabled: true}
 	if err := h.Store.AddLicenseAddon(c, la); err != nil {
 		response.Internal(c)
 		return
@@ -1094,7 +1528,11 @@ func (h *AdminHandler) AddLicenseAddon(c *gin.Context) {
 }
 
 func (h *AdminHandler) RemoveLicenseAddon(c *gin.Context) {
-	if err := h.Store.RemoveLicenseAddon(c, c.Param("id"), c.Param("addon_id")); err != nil {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	if err := h.Store.RemoveLicenseAddon(c, id, c.Param("addon_id")); err != nil {
 		response.Internal(c)
 		return
 	}
@@ -1102,7 +1540,11 @@ func (h *AdminHandler) RemoveLicenseAddon(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListLicenseAddons(c *gin.Context) {
-	addons, err := h.Store.ListLicenseAddons(c, c.Param("id"))
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	addons, err := h.Store.ListLicenseAddons(c, id)
 	if err != nil {
 		response.Internal(c)
 		return
@@ -1111,12 +1553,16 @@ func (h *AdminHandler) ListLicenseAddons(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListFloatingSessions(c *gin.Context) {
-	sessions, err := h.Store.ListFloatingSessions(c, c.Param("id"))
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	sessions, err := h.Store.ListFloatingSessions(c, id)
 	if err != nil {
 		response.Internal(c)
 		return
 	}
-	active, _ := h.Store.CountActiveFloating(c, c.Param("id"))
+	active, _ := h.Store.CountActiveFloating(c, id)
 	response.OK(c, gin.H{"sessions": sessions, "active": active})
 }
 
@@ -1135,6 +1581,9 @@ func (h *AdminHandler) ChangeLicensePlan(c *gin.Context) {
 	l, err := h.Store.FindLicenseByID(c, id)
 	if err != nil {
 		response.NotFound(c, "license not found")
+		return
+	}
+	if !requireKeyProductScope(c, l.ProductID) {
 		return
 	}
 
@@ -1165,6 +1614,18 @@ func (h *AdminHandler) ChangeLicensePlan(c *gin.Context) {
 		h.Webhook.Dispatch(c, l.ProductID, "plan.changed", map[string]any{
 			"license_id": id, "old_plan_id": oldPlanID, "new_plan_id": req.PlanID,
 		})
+	}
+
+	if h.Email != nil && h.Email.IsConfigured() && l.Email != "" {
+		productName := ""
+		if prod, perr := h.Store.FindProductByID(c, l.ProductID); perr == nil {
+			productName = prod.Name
+		}
+		oldPlanName := ""
+		if oldPlan, perr := h.Store.FindPlanByID(c, oldPlanID); perr == nil {
+			oldPlanName = oldPlan.Name
+		}
+		h.Email.SendPlanChanged(l.Email, productName, oldPlanName, plan.Name)
 	}
 
 	response.OK(c, gin.H{"status": "plan_changed", "plan_id": req.PlanID})
@@ -1233,9 +1694,68 @@ func (h *AdminHandler) UpdateSettings(c *gin.Context) {
 	response.OK(c, gin.H{"status": "saved"})
 }
 
+// RunMeteredSync triggers one drain pass of the Stripe meter-event
+// queue on demand. Useful for operators who just attached an
+// entitlement to a Stripe meter and want to ship the backlog
+// immediately, and for end-to-end tests that don't want to wait
+// for the 5-minute loop.
+func (h *AdminHandler) RunMeteredSync(c *gin.Context) {
+	if h.Metered == nil {
+		response.Err(c, http.StatusServiceUnavailable, "METERED_SYNC_NOT_AVAILABLE",
+			"metered billing syncer is not wired on this server")
+		return
+	}
+	pushed := h.Metered.RunOnce(c.Request.Context(), 200)
+	response.OK(c, gin.H{"pushed": pushed})
+}
+
+// RunExpiryChecks triggers one full pass of the lifecycle checker on
+// demand. Useful for admins (apply new grace_days immediately, debug
+// "did expiry mailer run last night?") and for end-to-end tests of the
+// expiring / dunning / renewal email paths that are otherwise on an
+// hourly cron.
+func (h *AdminHandler) RunExpiryChecks(c *gin.Context) {
+	if h.Expiry == nil {
+		response.Err(c, http.StatusServiceUnavailable, "EXPIRY_NOT_AVAILABLE",
+			"expiry checker is not wired on this server")
+		return
+	}
+	h.Expiry.RunAll(c.Request.Context())
+	response.OK(c, gin.H{"status": "ran"})
+}
+
+// SendTestEmail sends a real test message through the configured SMTP
+// server so the admin can verify host/port/credentials end-to-end.
+// Body: { "to": "user@example.com" } — optional; defaults to the
+// logged-in admin's own email address.
 func (h *AdminHandler) SendTestEmail(c *gin.Context) {
-	// Just return success for now - the actual email sending would use the SMTP config
-	response.OK(c, gin.H{"status": "sent"})
+	if h.Email == nil || !h.Email.IsConfigured() {
+		response.Err(c, http.StatusServiceUnavailable, "EMAIL_NOT_CONFIGURED",
+			"SMTP is not configured on this server — set SMTP_HOST / SMTP_FROM / etc.")
+		return
+	}
+	var req struct {
+		To string `json:"to"`
+	}
+	_ = c.ShouldBindJSON(&req) // body optional
+	to := strings.TrimSpace(req.To)
+	if to == "" {
+		if v, ok := c.Get("email"); ok {
+			to, _ = v.(string)
+		}
+	}
+	if err := apperr.ValidateEmail(to); err != nil {
+		response.BadRequest(c, err.Message)
+		return
+	}
+	if err := h.Email.Send(to,
+		"Keygate test email",
+		`<p>Hello! This is a test email from Keygate.</p>`+
+			`<p>If you can read this, your SMTP setup is working.</p>`); err != nil {
+		response.Err(c, http.StatusBadGateway, "EMAIL_SEND_FAILED", err.Error())
+		return
+	}
+	response.OK(c, gin.H{"status": "sent", "to": to})
 }
 
 // GetEmailTemplates returns all email templates (custom from DB + hardcoded defaults).
@@ -1292,7 +1812,9 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 		return
 	}
 
-	// Validate email format
+	// Normalize before validation + lookups so case variants don't
+	// create duplicate user rows or skip the self-invite guard.
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if appErr := apperr.ValidateEmail(req.Email); appErr != nil {
 		response.BadRequest(c, appErr.Message)
 		return
@@ -1307,13 +1829,17 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 		return
 	}
 
-	// Cannot invite yourself
-	if req.Email == actorUser.Email {
+	// Cannot invite yourself. EqualFold so "Owner@x.com" still trips
+	// the guard even if the actor row was stored mixed-case.
+	if strings.EqualFold(req.Email, actorUser.Email) {
 		response.BadRequest(c, "cannot change your own role via invite")
 		return
 	}
 
-	// Find or create user
+	// Find or create user. Track whether THIS request changed
+	// anything — if not, skip the notification email to avoid
+	// spamming the invitee on repeated owner clicks.
+	roleChanged := false
 	user, err := h.Store.FindUserByEmail(c, req.Email)
 	if err != nil {
 		// User doesn't exist yet — create placeholder (will get proper name on first login)
@@ -1322,6 +1848,7 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 			return
 		}
 		user, _ = h.Store.FindUserByEmail(c, req.Email)
+		roleChanged = true
 	} else {
 		// User exists — check if already same role (idempotent)
 		if user.Role == role {
@@ -1333,6 +1860,7 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 			return
 		}
 		user.Role = role
+		roleChanged = true
 	}
 
 	h.Store.Audit(c, &model.AuditLog{
@@ -1341,7 +1869,44 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 		Changes: map[string]any{"email": req.Email, "role": role},
 	})
 
+	// Notify the new admin via email. Best-effort: a send failure
+	// does NOT roll back the role grant (OTP login still works
+	// out-of-band). The inviter (actor) name is shown so the
+	// recipient knows who added them, which helps spot social
+	// engineering ("why am I suddenly admin on Keygate?").
+	if roleChanged && h.Email != nil && h.Email.IsConfigured() {
+		siteName, _ := h.Store.GetSetting(c, "site_name")
+		if siteName == "" {
+			siteName = "Keygate"
+		}
+		baseURL, _ := h.Store.GetSetting(c, "base_url")
+		if baseURL == "" {
+			baseURL = adminBaseURL(c)
+		}
+		loginURL := strings.TrimRight(baseURL, "/") + "/login"
+		inviter := actorUser.Name
+		if inviter == "" {
+			inviter = actorUser.Email
+		}
+		h.Email.SendAdminInvite(req.Email, siteName, inviter, role, loginURL)
+	}
+
 	response.OK(c, user)
+}
+
+// adminBaseURL infers the public base URL from the inbound request
+// when the settings table doesn't have an explicit BASE_URL. Used
+// only as a fallback for the admin invite email's login link.
+func adminBaseURL(c *gin.Context) string {
+	scheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := c.Request.Host
+	if forwarded := c.GetHeader("X-Forwarded-Host"); forwarded != "" {
+		host = forwarded
+	}
+	return scheme + "://" + host
 }
 
 // RemoveTeamMember demotes an admin back to regular user.
@@ -1377,16 +1942,16 @@ func (h *AdminHandler) RemoveTeamMember(c *gin.Context) {
 		return
 	}
 
-	// Prevent removing the last owner
-	if target.Role == model.RoleOwner {
-		ownerCount, _ := h.Store.CountOwners(c)
-		if ownerCount <= 1 {
+	// Atomic demote: a SELECT … FOR UPDATE inside DemoteOwnerAtomic
+	// serialises concurrent demotion attempts so the last-owner
+	// invariant holds even under racing requests. The non-atomic
+	// "count then update" pattern that lived here previously could
+	// be tricked into zero owners by two simultaneous calls.
+	if err := h.Store.DemoteOwnerAtomic(c, targetID); err != nil {
+		if errors.Is(err, store.ErrLastOwner) {
 			response.BadRequest(c, "cannot remove the last owner")
 			return
 		}
-	}
-
-	if err := h.Store.SetUserRole(c, targetID, model.RoleUser); err != nil {
 		response.Internal(c)
 		return
 	}
@@ -1454,7 +2019,7 @@ func (h *AdminHandler) ExportLicenses(c *gin.Context) {
 				Product:    productName,
 				Plan:       planName,
 				Status:     l.Status,
-				LicenseKey: l.LicenseKey,
+				LicenseKey: h.Store.DecryptLicenseKey(l),
 				ValidFrom:  l.ValidFrom.Format(time.RFC3339),
 				ValidUntil: validUntil,
 				CreatedAt:  l.CreatedAt.Format(time.RFC3339),
@@ -1498,7 +2063,7 @@ func (h *AdminHandler) ExportLicenses(c *gin.Context) {
 			productName,
 			planName,
 			l.Status,
-			l.LicenseKey,
+			h.Store.DecryptLicenseKey(l),
 			l.ValidFrom.Format(time.RFC3339),
 			validUntil,
 			l.CreatedAt.Format(time.RFC3339),

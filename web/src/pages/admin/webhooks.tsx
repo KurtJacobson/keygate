@@ -1,5 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff, Package, Play, Plus, Trash2 } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Eye,
+  EyeOff,
+  Package,
+  Play,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react"
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { showToast } from "@/components/toast"
@@ -98,6 +110,16 @@ export default function WebhooksPage() {
   })
   const testMut = useMutation({
     mutationFn: (id: string) => admin.testWebhook(id),
+    onSuccess: () => {
+      // Surface feedback — without a toast the only signal was the
+      // button's brief disabled flicker, which read as "did anything
+      // happen?" especially when the receiver is slow.
+      showToast(t("webhooks.testQueued"), "success")
+      qc.invalidateQueries({ queryKey: ["admin", "webhook-deliveries"] })
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t("webhooks.testFailed"), "error")
+    },
   })
 
   if (products.length === 0 && !isLoading) {
@@ -206,11 +228,18 @@ export default function WebhooksPage() {
                       </DataTableCell>
                       <DataTableCell>
                         <div className="flex gap-1">
+                          {/* Per-row pending state via mutation.variables.
+                              The global testMut.isPending / toggleMut.isPending
+                              flags would disable EVERY button in the table
+                              while ANY one is in-flight — looks like a
+                              "ghost click" cascade. Pinning to the specific
+                              wh.id keeps the visual state local. */}
                           <Button
                             variant="ghost"
                             size="icon"
                             title={wh.active ? t("common.inactive") : t("common.active")}
                             onClick={() => toggleMut.mutate({ id: wh.id, active: !wh.active })}
+                            disabled={toggleMut.isPending && toggleMut.variables?.id === wh.id}
                           >
                             {wh.active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
                           </Button>
@@ -219,7 +248,7 @@ export default function WebhooksPage() {
                             size="icon"
                             title={t("webhooks.test")}
                             onClick={() => testMut.mutate(wh.id)}
-                            disabled={testMut.isPending}
+                            disabled={testMut.isPending && testMut.variables === wh.id}
                           >
                             <Play className="h-4 w-4" />
                           </Button>
@@ -425,11 +454,28 @@ function SecretDialog({ secret, onClose }: { secret: string; onClose: () => void
 
 function DeliveryLogDialog({ webhookId, onClose }: { webhookId: string; onClose: () => void }) {
   const { t } = useI18n()
+  const qc = useQueryClient()
   const [page, setPage] = useState(0)
+  const [statusFilter, setStatusFilter] = useState<string>("")
   const limit = 20
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "webhook-deliveries", webhookId, page],
-    queryFn: () => admin.listWebhookDeliveries(webhookId, { offset: page * limit, limit }),
+    queryKey: ["admin", "webhook-deliveries", webhookId, page, statusFilter],
+    queryFn: () =>
+      admin.listWebhookDeliveries(webhookId, {
+        offset: page * limit,
+        limit,
+        status: statusFilter || undefined,
+      }),
+  })
+  const resendMut = useMutation({
+    mutationFn: (deliveryId: string) => admin.resendWebhookDelivery(webhookId, deliveryId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin", "webhook-deliveries", webhookId] })
+      showToast(t("webhooks.resendQueued"), "success")
+    },
+    onError: (err: Error) => {
+      showToast(err.message || t("webhooks.resendFailed"), "error")
+    },
   })
 
   const deliveries = data?.deliveries || []
@@ -442,8 +488,34 @@ function DeliveryLogDialog({ webhookId, onClose }: { webhookId: string; onClose:
       <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("webhooks.deliveries")}</DialogTitle>
-          <DialogDescription>{total} deliveries total</DialogDescription>
+          <DialogDescription>
+            {total} {t("webhooks.deliveriesCount")}
+          </DialogDescription>
         </DialogHeader>
+        {/* Status filter: lets admins drill into failed deliveries
+            without scrolling past every delivered row. Pagination
+            resets on change so the user sees the first matching page. */}
+        <div className="flex items-center gap-2 -mt-2">
+          <span className="text-xs text-muted-foreground">{t("common.status")}:</span>
+          {(["", "pending", "delivered", "failed"] as const).map((s) => (
+            <button
+              type="button"
+              key={s || "all"}
+              onClick={() => {
+                setStatusFilter(s)
+                setPage(0)
+              }}
+              className={
+                "text-xs px-2 py-1 rounded border " +
+                (statusFilter === s
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background hover:bg-muted")
+              }
+            >
+              {s === "" ? t("webhooks.statusAll") : t(`status.${s}` as const)}
+            </button>
+          ))}
+        </div>
         {isLoading ? (
           <div className="h-48 animate-pulse bg-muted rounded-lg" />
         ) : deliveries.length === 0 ? (
@@ -504,6 +576,24 @@ function DeliveryLogDialog({ webhookId, onClose }: { webhookId: string; onClose:
                       <DataTableRow key={`${d.id}-detail`}>
                         <DataTableCell colSpan={6}>
                           <div className="space-y-2 p-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[11px] font-mono text-muted-foreground break-all">id: {d.id}</span>
+                              {/* Resend re-fires the same event payload as a
+                                  new delivery. We disable it while the
+                                  mutation is in-flight to avoid double-send
+                                  on a slow connection. */}
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => resendMut.mutate(d.id)}
+                                disabled={resendMut.isPending}
+                              >
+                                <RefreshCw className="h-3 w-3 mr-1" />
+                                {resendMut.isPending && resendMut.variables === d.id
+                                  ? t("common.loading")
+                                  : t("webhooks.resend")}
+                              </Button>
+                            </div>
                             {d.payload && (
                               <div>
                                 <p className="text-xs font-medium text-muted-foreground mb-1">Payload</p>

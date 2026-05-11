@@ -252,8 +252,15 @@ function CreateLicenseDialog({
 }: {
   open: boolean
   onClose: () => void
-  products: { id: string; name: string }[]
-  onSubmit: (d: { product_id: string; plan_id: string; email: string; notes?: string }) => void
+  products: { id: string; name: string; type?: string }[]
+  onSubmit: (d: {
+    product_id: string
+    plan_id: string
+    email: string
+    notes?: string
+    external_customer_id?: string
+    external_workspace_id?: string
+  }) => void
   loading: boolean
 }) {
   const { t } = useI18n()
@@ -261,6 +268,8 @@ function CreateLicenseDialog({
   const [email, setEmail] = useState("")
   const [notes, setNotes] = useState("")
   const [planId, setPlanId] = useState("")
+  const [externalCustomerID, setExternalCustomerID] = useState("")
+  const [externalWorkspaceID, setExternalWorkspaceID] = useState("")
 
   const { data: plansData } = useQuery({
     queryKey: ["admin", "plans", productId],
@@ -268,6 +277,21 @@ function CreateLicenseDialog({
     enabled: !!productId,
   })
   const plans = plansData?.plans || []
+
+  // Show a hint right under the product dropdown so admin knows what
+  // they're committing to — saas licenses don't get device activation,
+  // desktop licenses don't get seats, etc. Mirrors the backend
+  // capability gate so admins can predict downstream behavior.
+  const selectedProduct = products.find((p) => p.id === productId)
+  const productType = selectedProduct?.type
+  const typeHintKey =
+    productType === "desktop"
+      ? "products.desktopDesc"
+      : productType === "saas"
+        ? "products.saasDesc"
+        : productType === "hybrid"
+          ? "products.hybridDesc"
+          : null
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -279,7 +303,14 @@ function CreateLicenseDialog({
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            onSubmit({ product_id: productId, plan_id: planId, email, notes })
+            onSubmit({
+              product_id: productId,
+              plan_id: planId,
+              email,
+              notes,
+              external_customer_id: externalCustomerID.trim() || undefined,
+              external_workspace_id: externalWorkspaceID.trim() || undefined,
+            })
           }}
           className="space-y-4"
         >
@@ -299,10 +330,12 @@ function CreateLicenseDialog({
                 {products.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     {p.name}
+                    {p.type ? <span className="ml-2 text-xs text-muted-foreground">[{p.type}]</span> : null}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {typeHintKey && <p className="text-xs text-muted-foreground">{t(typeHintKey)}</p>}
           </div>
           <div className="space-y-2">
             <Label>{t("common.plan")}</Label>
@@ -326,6 +359,30 @@ function CreateLicenseDialog({
           <div className="space-y-2">
             <Label>{t("licenses.notesOptional")}</Label>
             <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </div>
+          {/* External identifiers — opaque strings the merchant uses
+              to map their own user/workspace model to this license.
+              Both optional; leave blank if not integrating with an
+              external system. */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label>{t("licenses.externalCustomerID")}</Label>
+              <Input
+                value={externalCustomerID}
+                onChange={(e) => setExternalCustomerID(e.target.value)}
+                placeholder={t("licenses.externalIDPlaceholder")}
+                maxLength={256}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>{t("licenses.externalWorkspaceID")}</Label>
+              <Input
+                value={externalWorkspaceID}
+                onChange={(e) => setExternalWorkspaceID(e.target.value)}
+                placeholder={t("licenses.externalIDPlaceholder")}
+                maxLength={256}
+              />
+            </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">
             <Button type="button" variant="outline" onClick={onClose}>
@@ -372,10 +429,15 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ["admin"] })
     },
   })
+  // Activation deletion is destructive — wrap in a confirmation
+  // state so a stray ghost-click on the trash icon (icons sit
+  // close together in the row) doesn't immediately revoke a device.
+  const [confirmDeactivation, setConfirmDeactivation] = useState<{ id: string; label: string } | null>(null)
   const deleteActMut = useMutation({
     mutationFn: admin.deleteActivation,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "license", id] })
+      setConfirmDeactivation(null)
     },
   })
 
@@ -454,6 +516,22 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   <div className="text-sm">
                     <p className="text-muted-foreground">{t("licenses.notes")}</p>
                     <p className="mt-1">{lic.notes}</p>
+                  </div>
+                )}
+                {(lic.external_customer_id || lic.external_workspace_id) && (
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    {lic.external_customer_id && (
+                      <div>
+                        <p className="text-muted-foreground">{t("licenses.externalCustomerID")}</p>
+                        <p className="mt-1 font-mono text-xs break-all">{lic.external_customer_id}</p>
+                      </div>
+                    )}
+                    {lic.external_workspace_id && (
+                      <div>
+                        <p className="text-muted-foreground">{t("licenses.externalWorkspaceID")}</p>
+                        <p className="mt-1 font-mono text-xs break-all">{lic.external_workspace_id}</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -548,54 +626,63 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   </Button>
                 </div>
 
-                {/* Activations */}
-                <Separator />
-                <div>
-                  <h3 className="font-semibold mb-3">
-                    {t("licenses.activations")} ({lic.activations?.length || 0} / {lic.plan?.max_activations || "-"})
-                  </h3>
-                  {lic.activations && lic.activations.length > 0 ? (
-                    <DataTable>
-                      <DataTableHeader>
-                        <DataTableRow>
-                          <DataTableHead>{t("licenses.identifier")}</DataTableHead>
-                          <DataTableHead>{t("licenses.type")}</DataTableHead>
-                          <DataTableHead>{t("licenses.label")}</DataTableHead>
-                          <DataTableHead>{t("licenses.lastVerified")}</DataTableHead>
-                          <DataTableHead className="w-12" />
-                        </DataTableRow>
-                      </DataTableHeader>
-                      <DataTableBody>
-                        {lic.activations.map((act) => (
-                          <DataTableRow key={act.id}>
-                            <DataTableCell>
-                              <code className="text-xs">{act.identifier}</code>
-                            </DataTableCell>
-                            <DataTableCell>
-                              <Badge variant="secondary">{act.identifier_type}</Badge>
-                            </DataTableCell>
-                            <DataTableCell className="text-muted-foreground">{act.label || "-"}</DataTableCell>
-                            <DataTableCell className="text-muted-foreground text-xs">
-                              {formatDate(act.last_verified)}
-                            </DataTableCell>
-                            <DataTableCell>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => deleteActMut.mutate(act.id)}
-                              >
-                                <Trash2 className="h-3 w-3 text-destructive" />
-                              </Button>
-                            </DataTableCell>
-                          </DataTableRow>
-                        ))}
-                      </DataTableBody>
-                    </DataTable>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">{t("licenses.noActivations")}</p>
-                  )}
-                </div>
+                {/* Activations — hidden for SaaS products (which don't
+                    use per-device activation; their user model is seats). */}
+                {lic.product?.type !== "saas" && (
+                  <>
+                    <Separator />
+                    <div>
+                      <h3 className="font-semibold mb-3">
+                        {t("licenses.activations")} ({lic.activations?.length || 0} / {lic.plan?.max_activations || "-"}
+                        )
+                      </h3>
+                      {lic.activations && lic.activations.length > 0 ? (
+                        <DataTable>
+                          <DataTableHeader>
+                            <DataTableRow>
+                              <DataTableHead>{t("licenses.identifier")}</DataTableHead>
+                              <DataTableHead>{t("licenses.type")}</DataTableHead>
+                              <DataTableHead>{t("licenses.label")}</DataTableHead>
+                              <DataTableHead>{t("licenses.lastVerified")}</DataTableHead>
+                              <DataTableHead className="w-12" />
+                            </DataTableRow>
+                          </DataTableHeader>
+                          <DataTableBody>
+                            {lic.activations.map((act) => (
+                              <DataTableRow key={act.id}>
+                                <DataTableCell>
+                                  <code className="text-xs">{act.identifier}</code>
+                                </DataTableCell>
+                                <DataTableCell>
+                                  <Badge variant="secondary">{act.identifier_type}</Badge>
+                                </DataTableCell>
+                                <DataTableCell className="text-muted-foreground">{act.label || "-"}</DataTableCell>
+                                <DataTableCell className="text-muted-foreground text-xs">
+                                  {formatDate(act.last_verified)}
+                                </DataTableCell>
+                                <DataTableCell>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-7 w-7"
+                                    onClick={() =>
+                                      setConfirmDeactivation({ id: act.id, label: act.label || act.identifier })
+                                    }
+                                    disabled={deleteActMut.isPending && deleteActMut.variables === act.id}
+                                  >
+                                    <Trash2 className="h-3 w-3 text-destructive" />
+                                  </Button>
+                                </DataTableCell>
+                              </DataTableRow>
+                            ))}
+                          </DataTableBody>
+                        </DataTable>
+                      ) : (
+                        <p className="text-sm text-muted-foreground">{t("licenses.noActivations")}</p>
+                      )}
+                    </div>
+                  </>
+                )}
 
                 {/* Entitlements */}
                 {lic.plan?.entitlements && lic.plan.entitlements.length > 0 && (
@@ -622,7 +709,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
             </TabsContent>
 
             <TabsContent value="seats">
-              <SeatsTab licenseId={id} />
+              <SeatsTab licenseId={id} maxSeats={lic?.plan?.max_seats || 0} />
             </TabsContent>
           </Tabs>
         )}
@@ -636,6 +723,25 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
             onClose={() => setChangingPlan(false)}
           />
         )}
+        <AlertDialog open={!!confirmDeactivation} onOpenChange={() => setConfirmDeactivation(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t("licenses.deactivateTitle", { device: confirmDeactivation?.label || "" })}
+              </AlertDialogTitle>
+              <AlertDialogDescription>{t("licenses.deactivateDesc")}</AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="flex justify-end gap-2">
+              <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                onClick={() => confirmDeactivation && deleteActMut.mutate(confirmDeactivation.id)}
+              >
+                {t("licenses.deactivate")}
+              </AlertDialogAction>
+            </div>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   )
@@ -651,10 +757,17 @@ function UsageTab({ licenseId }: { licenseId: string }) {
     queryFn: () => admin.getLicenseUsage(licenseId, { offset: page * limit, limit }),
   })
 
+  // confirmResetUsage holds the feature name pending confirmation.
+  // Reset is destructive: it zeroes the counter for the live period,
+  // which most plans will treat as "free re-use until the next
+  // reset" — a stray click can effectively grant the customer free
+  // usage. The AlertDialog forces an intentional click.
+  const [confirmResetUsage, setConfirmResetUsage] = useState<string | null>(null)
   const resetMut = useMutation({
     mutationFn: (feature: string) => admin.resetUsageCounter(licenseId, { feature }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "license-usage", licenseId] })
+      setConfirmResetUsage(null)
     },
   })
 
@@ -700,8 +813,8 @@ function UsageTab({ licenseId }: { licenseId: string }) {
                       size="icon"
                       className="h-7 w-7"
                       title={t("licenses.resetCounter")}
-                      onClick={() => resetMut.mutate(c.feature)}
-                      disabled={resetMut.isPending}
+                      onClick={() => setConfirmResetUsage(c.feature)}
+                      disabled={resetMut.isPending && resetMut.variables === c.feature}
                     >
                       <RefreshCw className="h-3 w-3" />
                     </Button>
@@ -754,11 +867,35 @@ function UsageTab({ licenseId }: { licenseId: string }) {
           </>
         )}
       </div>
+      <AlertDialog open={!!confirmResetUsage} onOpenChange={() => setConfirmResetUsage(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("licenses.resetCounterTitle", { feature: confirmResetUsage || "" })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("licenses.resetCounterDesc")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => confirmResetUsage && resetMut.mutate(confirmResetUsage)}>
+              {t("licenses.resetCounter")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
 
-function SeatsTab({ licenseId }: { licenseId: string }) {
+// SeatsTab is READ-ONLY by design.
+//
+// Keygate's bundled UI doesn't expose seat / team management on
+// purpose: the platform's job is license-key issuance, not team
+// management. The seats data model + API endpoints exist for
+// merchant integrations that want to wire team UX into their own
+// product, but our admin console only reads the current state for
+// support / debugging ("how many seats has ACME used?"). Inviting
+// someone onto a customer's license from this view would let an
+// operator change a team's composition without consent.
+function SeatsTab({ licenseId, maxSeats }: { licenseId: string; maxSeats: number }) {
   const { t } = useI18n()
   const { data, isLoading } = useQuery({
     queryKey: ["admin", "license-seats", licenseId],
@@ -772,11 +909,10 @@ function SeatsTab({ licenseId }: { licenseId: string }) {
 
   return (
     <div className="space-y-4 pt-2">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold">
-          {t("licenses.seats")} ({activeCount} {t("licenses.active")})
-        </h3>
-      </div>
+      <h3 className="font-semibold">
+        {t("licenses.seats")} ({activeCount}
+        {maxSeats > 0 ? ` / ${maxSeats}` : ""} {t("licenses.active")})
+      </h3>
       {seats.length === 0 ? (
         <p className="text-sm text-muted-foreground">{t("licenses.noSeats")}</p>
       ) : (

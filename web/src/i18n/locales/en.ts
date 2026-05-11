@@ -10,6 +10,19 @@ const en = {
   "common.loading": "Loading...",
   "common.noData": "No data",
   "common.confirm": "Confirm",
+  "common.optional": "optional",
+
+  // Accept-invite landing page
+  "acceptInvite.processing": "Accepting your invitation…",
+  "acceptInvite.missingToken": "Missing invite token",
+  "acceptInvite.missingTokenDesc": "This URL doesn't carry a valid invitation token. Re-open the link from your email.",
+  "acceptInvite.invalidTitle": "Invitation invalid or expired",
+  "acceptInvite.invalidDesc":
+    "This invitation has already been used, was revoked, or expired. Ask your team owner to send a fresh one.",
+  "acceptInvite.acceptedTitle": "Welcome to {product}",
+  "acceptInvite.acceptedDesc": "You're in as {role}. Sign in to your portal to manage seats and licenses.",
+  "acceptInvite.openPortal": "Open portal",
+  "acceptInvite.goHome": "Back to home",
   "common.actions": "Actions",
   "common.status": "Status",
   "common.name": "Name",
@@ -24,11 +37,14 @@ const en = {
   "common.plan": "Plan",
   "common.yes": "Yes",
   "common.no": "No",
+  "common.unlimited": "Unlimited",
+  "common.unlimitedSymbol": "∞",
 
   // Nav
   "nav.dashboard": "Dashboard",
   "nav.products": "Products",
   "nav.plans": "Plans",
+  "nav.releases": "Releases",
   "nav.licenses": "Licenses",
   "nav.apiKeys": "API Keys",
   "nav.webhooks": "Webhooks",
@@ -75,6 +91,14 @@ const en = {
   "plans.licenseType": "License Type",
   "plans.maxActivations": "Max Activations",
   "plans.maxSeats": "Max Seats",
+  "plans.licenseModel": "License Model",
+  "plans.modelStandard": "Standard",
+  "plans.modelFloating": "Floating (concurrent)",
+  "plans.floatingTimeout": "Floating Timeout (minutes)",
+  "plans.hintDesktop": "Desktop product — supports activations + auto-update feeds. Seats are disabled.",
+  "plans.hintSaas": "SaaS product — supports seats and usage. Activations and release feeds are disabled.",
+  "plans.hintHybrid": "Hybrid product — activations, seats, and release feeds are all available.",
+  "plans.notApplicableForType": "Not applicable for this product type",
   "plans.trialDays": "Trial Days",
   "plans.graceDays": "Grace Days",
   "plans.billingInterval": "Billing Interval",
@@ -87,6 +111,12 @@ const en = {
   "plans.formDesc": "Configure the plan details.",
   "plans.entitlements": "Entitlements",
   "plans.addEntitlement": "Add Entitlement",
+  "plans.deleteEntitlementTitle": "Delete {feature}?",
+  "plans.deleteEntitlementDesc":
+    "This removes the entitlement from this plan immediately. Existing licenses lose access to the feature.",
+  "plans.stripeMeterEventName": "Stripe meter event name (optional)",
+  "plans.stripeMeterEventNameHelp":
+    "Enable Stripe metered billing. Match the event_name on your Stripe meter; each usage call pushes a meter event with this name.",
   "plans.allProducts": "All products",
 
   // Licenses
@@ -134,6 +164,19 @@ const en = {
   "licenses.used": "Used",
   "licenses.updated": "Updated",
   "licenses.resetCounter": "Reset counter",
+  "licenses.resetCounterTitle": "Reset usage for {feature}?",
+  "licenses.resetCounterDesc":
+    "The counter for the current period drops to zero. The customer can immediately consume the full quota again. This action is logged in the audit trail.",
+  "licenses.deactivate": "Deactivate",
+  "licenses.invite": "Invite member",
+  "licenses.inviteTitle": "Invite a team member",
+  "licenses.inviteDesc": "We'll email a one-time accept link to this address. The link expires in 7 days.",
+  "licenses.sendInvite": "Send invite",
+  "licenses.seatInviteSent": "Invitation sent",
+  "licenses.seatCapReached": "Seat cap reached. Upgrade the plan or remove an inactive member before inviting more.",
+  "licenses.deactivateTitle": "Deactivate {device}?",
+  "licenses.deactivateDesc":
+    "This device loses access immediately. The customer can re-activate it (consuming an activation slot) from any client that knows the license key.",
   "licenses.recentEvents": "Recent Events",
   "licenses.noUsageEvents": "No usage events.",
   "licenses.quantity": "Quantity",
@@ -145,7 +188,7 @@ const en = {
 
   // API Keys
   "apiKeys.title": "API Keys",
-  "apiKeys.subtitle": "Manage API keys for product SDK authentication.",
+  "apiKeys.subtitle": "Server-to-server credentials with scopes.",
   "apiKeys.new": "New API Key",
   "apiKeys.prefix": "Key Prefix",
   "apiKeys.lastUsed": "Last Used",
@@ -154,6 +197,20 @@ const en = {
   "apiKeys.createdDesc": "Copy this key now. You won't be able to see it again.",
   "apiKeys.deleteConfirm": "This will immediately invalidate this key. Any clients using it will stop working.",
   "apiKeys.noProductsDesc": "Create a product first before generating API keys.",
+  "apiKeys.scopes": "Scopes",
+  "apiKeys.scopesNone": "No scopes selected",
+  "apiKeys.lastUsedIP": "From IP",
+  "apiKeys.rotate": "Rotate",
+  "apiKeys.rotateTitle": "Rotate API key",
+  "apiKeys.rotateConfirm":
+    "The current secret stops working immediately. Update any clients using it before continuing.",
+  "apiKeys.scopeAdmin": "Admin (wildcard)",
+  "apiKeys.scopeAdminDesc": "Full /admin/* access. Use for operator tooling.",
+  "apiKeys.scopeLicensesWrite": "Licenses (write)",
+  "apiKeys.scopeLicensesWriteDesc": "Create, update, and manage licenses. For checkout/provisioning backends.",
+  "apiKeys.scopeReleasesWrite": "Releases (write)",
+  "apiKeys.scopeReleasesWriteDesc": "Push releases and artifacts. For CI/CD that ships builds.",
+  "apiKeys.atLeastOneScope": "Pick at least one scope.",
 
   // Webhooks
   "webhooks.title": "Webhooks",
@@ -226,6 +283,8 @@ const en = {
   "audit.filterEntity": "Entity type",
   "audit.allEntities": "All entities",
   "audit.filterEntityId": "Search by entity ID",
+  "audit.filterProduct": "Product",
+  "audit.allProducts": "All products",
 
   // Customers
   "customers.title": "Customers",
@@ -292,6 +351,9 @@ const en = {
   "settings.emailTemplates": "Email Templates",
   "settings.editTemplate": "Edit",
   "settings.resetTemplate": "Reset to Default",
+  "settings.resetTemplateTitle": "Reset {template} template?",
+  "settings.resetTemplateDesc":
+    "Your customized HTML will be replaced with the bundled default. This action cannot be undone — copy the current HTML out first if you might need it back.",
   "settings.templateSaved": "Template saved.",
   "settings.templateReset": "Template reset to default.",
   "settings.templateDesc":
@@ -312,6 +374,7 @@ const en = {
   "settings.saved": "Settings saved successfully.",
   "settings.saveError": "Failed to save settings.",
   "settings.testEmailSent": "Test email sent.",
+  "settings.testEmailFailed": "Failed to send test email.",
 
   // Pagination
   "pagination.of": "of",
@@ -356,6 +419,9 @@ const en = {
   "portal.featuresIncluded": "Features Included",
   "portal.teamMembers": "Team Members",
   "portal.addMember": "Add Member",
+  "portal.removeMember": "Remove member",
+  "portal.removeMemberTitle": "Remove team member?",
+  "portal.removeMemberDesc": "{email} will lose access immediately. You can re-invite them later.",
   "portal.noMembers": "No team members yet.",
   "portal.seatLimit": "Seat limit reached. Upgrade your plan to add more members.",
   "portal.inviteDesc": "Invite a new member to this license.",
@@ -413,6 +479,13 @@ const en = {
   "webhooks.attempts": "Attempts",
   "webhooks.delivered": "Delivered",
   "webhooks.noDeliveries": "No deliveries yet.",
+  "webhooks.deliveriesCount": "deliveries total",
+  "webhooks.statusAll": "All",
+  "webhooks.resend": "Resend",
+  "webhooks.resendQueued": "Resend queued",
+  "webhooks.resendFailed": "Resend failed",
+  "webhooks.testQueued": "Test event dispatched",
+  "webhooks.testFailed": "Test dispatch failed",
 
   // Plans extras
   "plans.subscription": "Subscription",
@@ -436,12 +509,18 @@ const en = {
 
   // Products extras
   "products.desktop": "Desktop",
+  "products.desktopDesc": "Installable app. Per-device activations + auto-update feeds.",
   "products.saas": "SaaS",
+  "products.saasDesc": "Hosted service. Per-user seats + usage metering.",
   "products.hybrid": "Hybrid",
+  "products.hybridDesc": "Cloud + installable client. All capabilities available.",
 
   // Licenses extras
   "licenses.notes": "Notes",
   "licenses.notesOptional": "Notes (optional)",
+  "licenses.externalCustomerID": "External customer ID",
+  "licenses.externalWorkspaceID": "External workspace ID",
+  "licenses.externalIDPlaceholder": "Optional. Your own user/tenant ID.",
 
   // Analytics extras
   "analytics.period": "Period",

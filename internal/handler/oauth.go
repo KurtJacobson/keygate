@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -81,7 +83,24 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	}
 
 	tokenHash := hashToken(raw)
-	rt, err := h.Store.FindRefreshToken(c, tokenHash)
+	rt, err := h.Store.RotateRefreshToken(c, tokenHash)
+	if errors.Is(err, store.ErrRefreshTokenReused) {
+		// REUSE DETECTED: a token that was already rotated has been
+		// presented again. Either the legit user replayed a stale
+		// cookie, OR an attacker captured a token. We can't tell
+		// which, so we take the safe-by-default action: wipe every
+		// refresh_token for the user. Both parties (legit + attacker)
+		// lose their refresh capability; legit user has to re-auth
+		// from scratch.
+		h.Store.DeleteUserRefreshTokens(c, rt.UserID)
+		slog.Warn("refresh token reuse detected — revoking all user tokens",
+			"user_id", rt.UserID, "token_id", rt.ID)
+		// Clear the cookie on the client so the next page load
+		// doesn't try the dead token again.
+		setSecureCookie(c, "refresh_token", "", -1, "/api/v1/auth/refresh", h.Config.IsProduction(), true)
+		response.Unauthorized(c, "refresh token reuse detected")
+		return
+	}
 	if err != nil {
 		response.Unauthorized(c, "invalid refresh token")
 		return
@@ -93,8 +112,10 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 		return
 	}
 
-	// Rotate: delete old, issue new
-	h.Store.DeleteRefreshToken(c, tokenHash)
+	// Token already marked revoked atomically by RotateRefreshToken.
+	// Just issue the new session — the new token is a fresh row,
+	// the old row stays in DB with revoked_at set so a future
+	// replay of the old hash will trip ErrRefreshTokenReused.
 	h.issueSession(c, user)
 	response.OK(c, gin.H{"status": "refreshed"})
 }
@@ -152,6 +173,9 @@ func (h *AuthHandler) DevLogin(c *gin.Context) {
 		response.BadRequest(c, "email is required")
 		return
 	}
+	// Normalize for parity with the OTP/setup paths — otherwise
+	// "Foo@x.com" and "foo@x.com" become two distinct user rows.
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 	if req.Name == "" {
 		req.Name = "Dev User"
 	}
@@ -189,4 +213,40 @@ func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// AcceptInvite consumes a seat-invite token and, on success, ALSO
+// issues a session for the invitee. Reasoning: the plain token in
+// the email is proof of email ownership (we mailed it there), so
+// requiring the invitee to *separately* OTP themselves in after
+// clicking the link is theater — and bad UX. They'd hit /login and
+// have to round-trip through the same mailbox. By issuing a session
+// here, "click link → land in portal" is one step.
+//
+// Service is provided as a parameter rather than as a field so we
+// don't have to widen AuthHandler's surface; main.go closes over it.
+func (h *AuthHandler) AcceptInvite(svc *service.SeatService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req struct {
+			Token string `json:"token" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			response.BadRequest(c, "token is required")
+			return
+		}
+		res, err := svc.AcceptSeatInvite(c.Request.Context(), req.Token)
+		if err != nil {
+			writeAppErr(c, err)
+			return
+		}
+		// Re-load the user so issueSession sees the canonical row
+		// (id + role + name). AcceptSeatInvite returned the user
+		// model but it was constructed inside the tx and may lack
+		// fields populated by triggers.
+		user, lerr := h.Store.FindUserByID(c, res.UserID)
+		if lerr == nil {
+			h.issueSession(c, user)
+		}
+		response.OK(c, res)
+	}
 }

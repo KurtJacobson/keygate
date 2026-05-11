@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -21,10 +22,14 @@ import (
 
 	"github.com/tabloy/keygate/internal/branding"
 	"github.com/tabloy/keygate/internal/config"
+	"github.com/tabloy/keygate/internal/crypto"
 	"github.com/tabloy/keygate/internal/handler"
+	"github.com/tabloy/keygate/internal/license"
 	"github.com/tabloy/keygate/internal/middleware"
+	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/internal/payment"
 	"github.com/tabloy/keygate/internal/service"
+	"github.com/tabloy/keygate/internal/storage"
 	"github.com/tabloy/keygate/internal/store"
 	"github.com/tabloy/keygate/internal/version"
 	"github.com/tabloy/keygate/pkg/response"
@@ -80,27 +85,153 @@ func main() {
 		webhookRetryInterval = 30 * time.Second
 	}
 
-	bf := middleware.NewBruteForceProtection(5, 30*time.Second, 30*time.Minute, 5*time.Minute)
+	bf := middleware.NewBruteForceProtection(
+		cfg.BFMaxFails,
+		time.Duration(cfg.BFLockoutSeconds)*time.Second,
+		30*time.Minute,
+		5*time.Minute,
+	)
 	webhookSvc := service.NewWebhookService(db, logger, webhookHTTPTimeout, cfg.WebhookMaxAttempts)
-	licenseSvc := service.NewLicenseService(db, cfg.LicenseSigningKey, logger, bf, webhookSvc)
-	usageSvc := service.NewUsageService(db, webhookSvc, logger, cfg.QuotaWarningThreshold)
-	seatSvc := service.NewSeatService(db, webhookSvc, logger)
+	emailSvc := service.NewEmailService(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, logger, db)
+	// LICENSE_SIGNING_KEY is a 32-byte ed25519 seed in hex. Parsed
+	// once here so an invalid value fails fast at startup rather
+	// than the first /license/activate call.
+	licenseSigningPriv, err := license.PrivateKeyFromHex(cfg.LicenseSigningKey)
+	if err != nil {
+		log.Fatalf("LICENSE_SIGNING_KEY: %v", err)
+	}
+	licenseSvc := service.NewLicenseService(db, licenseSigningPriv, logger, bf, webhookSvc)
+	usageSvc := service.NewUsageService(db, webhookSvc, emailSvc, logger, cfg.QuotaWarningThreshold)
+	seatSvc := service.NewSeatService(db, webhookSvc, emailSvc, logger, cfg.BaseURL)
 	entitlementSvc := service.NewEntitlementService(db, logger)
 	floatingSvc := service.NewFloatingService(db, logger)
-	emailSvc := service.NewEmailService(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUsername, cfg.SMTPPassword, cfg.SMTPFrom, logger, db)
+
+	// ─── Release subsystem (storage + service) ───
+	// When STORAGE_* env vars aren't configured we fall back to a Disabled
+	// stub so the server still boots. Release endpoints will return 503 when
+	// they reach storage; license/billing functions are unaffected.
+	var releaseStorage storage.Storage = storage.Disabled{}
+	if cfg.IsStorageEnabled() {
+		s3, err := storage.NewS3(context.Background(), storage.S3Config{
+			Endpoint:       cfg.StorageEndpoint,
+			Region:         cfg.StorageRegion,
+			Bucket:         cfg.StorageBucket,
+			AccessKey:      cfg.StorageAccessKey,
+			SecretKey:      cfg.StorageSecretKey,
+			ForcePathStyle: cfg.StorageForcePathStyle,
+		})
+		if err != nil {
+			logger.Error("storage: init failed; release endpoints will be disabled", "error", err)
+		} else {
+			releaseStorage = s3
+			logger.Info("storage: initialized", "endpoint", cfg.StorageEndpoint, "bucket", cfg.StorageBucket)
+		}
+	} else {
+		logger.Info("storage: disabled (STORAGE_BUCKET/ACCESS_KEY/SECRET_KEY not all set)")
+	}
+	uploadTTL, err := time.ParseDuration(cfg.StorageUploadTTL)
+	if err != nil {
+		logger.Warn("storage: invalid STORAGE_UPLOAD_TTL, using service default",
+			"value", cfg.StorageUploadTTL, "error", err)
+		uploadTTL = 0 // service applies its own default
+	}
+	downloadTTL, err := time.ParseDuration(cfg.StorageDownloadTTL)
+	if err != nil {
+		logger.Warn("storage: invalid STORAGE_DOWNLOAD_TTL, using service default",
+			"value", cfg.StorageDownloadTTL, "error", err)
+		downloadTTL = 0
+	}
+
+	// Master encryption key drives two independent features via HKDF:
+	//   - "license-key":                 AEAD over license_key plaintext at rest.
+	//                                    Works even when storage is disabled.
+	//   - "release-signing-private-key": AEAD over per-product Ed25519
+	//                                    private keys. Requires storage.
+	//
+	// Subkeys are purpose-isolated — ciphertext from one cannot decrypt
+	// under another.
+	var releaseSigner *service.ReleaseSigningService
+	if cfg.IsMasterEncryptionKeyConfigured() {
+		masterRaw, err := hex.DecodeString(cfg.ReleaseKeyEncryptionKey)
+		if err != nil {
+			logger.Error("master key hex decode failed; license/release encryption disabled", "error", err)
+		} else {
+			// Wire license-key encryption — orthogonal to storage.
+			db.LicenseKeyAEAD = crypto.MustDeriveAEAD(masterRaw, "license-key")
+			logger.Info("license key encryption: enabled")
+
+			// Best-effort backfill of unencrypted historical rows. Non-blocking,
+			// resumable across restarts. No timeout — runs until done or shutdown.
+			go func() {
+				n, err := db.BackfillLicenseKeyEncrypted(context.Background(), logger)
+				if err != nil {
+					logger.Warn("license key backfill failed (will retry next start)",
+						"encrypted_so_far", n, "error", err)
+					return
+				}
+				if n > 0 {
+					logger.Info("license key backfill complete", "encrypted", n)
+				}
+			}()
+
+			// Release signing requires storage in addition to the master key.
+			if cfg.IsStorageEnabled() {
+				releaseAEAD := crypto.MustDeriveAEAD(masterRaw, "release-signing-private-key")
+				releaseSigner = service.NewReleaseSigningService(service.ReleaseSigningServiceConfig{
+					Store:       db,
+					Storage:     releaseStorage,
+					AEAD:        releaseAEAD,
+					Logger:      logger,
+					MaxSignSize: cfg.MaxReleaseSignSize,
+				})
+				logger.Info("release signing: enabled", "max_sign_mb", cfg.MaxReleaseSignSize/(1024*1024))
+			}
+		}
+	} else {
+		logger.Warn("license key encryption: DISABLED (RELEASE_KEY_ENCRYPTION_KEY not set)")
+	}
+
+	releaseSvc := service.NewReleaseService(service.ReleaseServiceConfig{
+		Store:       db,
+		Storage:     releaseStorage,
+		Signer:      releaseSigner,
+		Logger:      logger,
+		Webhook:     webhookSvc,
+		UploadTTL:   uploadTTL,
+		DownloadTTL: downloadTTL,
+	})
 
 	licenseH := handler.NewLicenseHandler(licenseSvc)
 	authH := &handler.AuthHandler{Store: db, Config: cfg, Email: emailSvc}
-	stripeH := &payment.StripeHandler{Store: db, WebhookSecret: cfg.StripeWebhookSecret, BaseURL: cfg.BaseURL, Email: emailSvc, WebhookSvc: webhookSvc}
+	stripeH := &payment.StripeHandler{
+		Store:         db,
+		WebhookSecret: cfg.StripeWebhookSecret,
+		BaseURL:       cfg.BaseURL,
+		Email:         emailSvc,
+		WebhookSvc:    webhookSvc,
+		Livemode:      cfg.StripeLivemode,
+	}
 	// Initialize thread-safe webhook secret with config value
 	stripeH.SetWebhookSecret(cfg.StripeWebhookSecret)
-	adminH := handler.NewAdminHandler(db, webhookSvc)
+	expiryChecker := service.NewExpiryChecker(db, emailSvc, webhookSvc, logger)
+	meteredSyncer := service.NewMeteredBillingSyncer(db, logger)
+	adminH := handler.NewAdminHandler(db, webhookSvc, emailSvc, expiryChecker, meteredSyncer)
 	usageH := handler.NewUsageHandler(usageSvc)
 	seatH := handler.NewSeatHandler(seatSvc)
 	entitlementH := handler.NewEntitlementHandler(entitlementSvc)
 	floatingH := handler.NewFloatingHandler(floatingSvc)
 	webhookAdminH := handler.NewWebhookAdminHandler(db, webhookSvc)
 	systemH := handler.NewSystemHandler(db)
+	releaseAdminH := handler.NewReleaseAdminHandler(releaseSvc, db)
+	releasePublicH := handler.NewReleasePublicHandler(handler.ReleasePublicConfig{
+		Service:     releaseSvc,
+		Store:       db,
+		Storage:     releaseStorage,
+		Logger:      logger,
+		BaseURL:     cfg.BaseURL,
+		DownloadTTL: downloadTTL,
+	})
+	releaseSigningH := handler.NewReleaseSigningAdminHandler(releaseSigner, db)
 
 	// Sync ADMIN_EMAILS to database roles (backward compatibility / initial setup)
 	if len(cfg.AdminEmails) > 0 {
@@ -123,14 +254,28 @@ func main() {
 
 	go floatingSvc.StartCleanupLoop(ctx, time.Minute)
 
-	expiryChecker := service.NewExpiryChecker(db, emailSvc, webhookSvc, logger)
 	go expiryChecker.StartExpiryLoop(ctx)
+
+	// Metered billing sync. 5-minute cadence — Stripe aggregates
+	// server-side so sub-minute polling burns rate budget for no
+	// real benefit. Only starts when a Stripe key is configured;
+	// otherwise the dispatcher would error every cycle.
+	if cfg.StripeSecretKey != "" {
+		go meteredSyncer.StartSyncLoop(ctx, 5*time.Minute)
+	}
 
 	go emailSvc.StartEmailQueueProcessor(ctx, db)
 
 	go systemH.StartAutoCheck(ctx.Done())
 
-	// Cleanup expired OTP codes every hour
+	// Cleanup expired transient rows every hour. Grouped together
+	// because each table grows unboundedly otherwise:
+	//   - OTP codes: short TTL, but new rows on every login attempt.
+	//   - Refresh tokens: rotation leaves revoked-but-not-yet-expired
+	//     rows behind for reuse-detection; safe to drop only past the
+	//     original 30-day expires_at.
+	//   - Idempotency keys: 24h TTL per row, lots of rows for high-
+	//     traffic SDK endpoints (activate / usage / floating-checkout).
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
@@ -140,6 +285,8 @@ func main() {
 				return
 			case <-ticker.C:
 				db.CleanExpiredOTPs(context.Background())
+				db.CleanExpiredRefreshTokens(context.Background())
+				_, _ = db.IdempotencyPruneExpired(context.Background())
 			}
 		}
 	}()
@@ -278,23 +425,112 @@ func main() {
 		response.OK(c, settings)
 	})
 
-	lic := v1.Group("/license", middleware.LicenseBruteForceGuard(bf), middleware.APIKeyAuth(db), middleware.RateLimit(cfg.RateLimitAPI, time.Minute))
+	// License-verification public key. SDKs fetch this once (or
+	// hardcode it after first run) to verify the offline ed25519
+	// token they get back from /license/activate and /license/verify.
+	// Long-lived so it can be cached aggressively; rotation is an
+	// operator action that forces clients to re-fetch.
+	licensePubHex := hex.EncodeToString(licenseSvc.SigningPublicKey())
+	v1.GET("/license/pubkey", func(c *gin.Context) {
+		c.Header("Cache-Control", "public, max-age=3600")
+		response.OK(c, gin.H{
+			"algorithm":  "ed25519",
+			"public_key": licensePubHex,
+			"format":     "hex",
+		})
+	})
+
+	// Public license endpoints.
+	//
+	// Auth model: license_key in body IS the credential. We dropped the
+	// API-key gate because api_keys embedded in shipped client binaries
+	// are not real secrets — anyone with the binary can extract them, so
+	// requiring them was security theater while adding integration
+	// friction. Tenant scoping still holds: each license row carries a
+	// product_id FK, so a license_key can only operate on its own
+	// product's data.
+	//
+	// Defenses kept:
+	//   - LicenseBruteForceGuard — per-IP throttle on failed verifies
+	//   - RateLimitByIP — aggregate request cap (raised because legitimate
+	//     SDK clients poll on a timer)
+	//
+	// api_keys table + admin CRUD remain for server-to-server use cases
+	// (a customer's backend querying license state).
+	licRateLimit := max(cfg.RateLimitAPI*2, 120)
+	lic := v1.Group("/license",
+		middleware.LicenseBruteForceGuard(bf),
+		middleware.RateLimitByIP(licRateLimit, time.Minute))
 	{
-		lic.POST("/activate", licenseH.Activate)
+		// Idempotent-by-design endpoints (apply Idempotency-Key middleware
+		// to write paths only — read-style verifies are already idempotent).
+		//
+		// Scope rule for this group: license_key is the SDK credential
+		// — it identifies a device for verify / activate / usage /
+		// download. It is NOT a seat-management credential. Seat
+		// add/remove/list moved to /portal/seats/* (session auth on
+		// the logged-in customer); seat-invite acceptance moved to
+		// /invites/accept (public, opaque-token only). The reason is
+		// trust-model alignment: a license_key sitting on the user's
+		// laptop shouldn't be able to silently change the org's
+		// member roster.
+		idem := middleware.Idempotency(db)
+		lic.POST("/activate", idem, licenseH.Activate)
+		lic.POST("/usage", idem, usageH.RecordUsage)
+		lic.POST("/floating/checkout", idem, floatingH.CheckOut)
+
+		// Read / pure-status endpoints — no idempotency layer needed.
 		lic.POST("/verify", licenseH.Verify)
 		lic.POST("/deactivate", licenseH.Deactivate)
 		lic.POST("/entitlements", entitlementH.Check)
-		lic.POST("/usage", usageH.RecordUsage)
 		lic.POST("/usage/status", usageH.GetQuotaStatus)
-		lic.POST("/seats", seatH.ListSeats)
-		lic.POST("/seats/add", seatH.AddSeat)
-		lic.POST("/seats/remove", seatH.RemoveSeat)
-		lic.POST("/floating/checkout", floatingH.CheckOut)
 		lic.POST("/floating/checkin", floatingH.CheckIn)
 		lic.POST("/floating/heartbeat", floatingH.Heartbeat)
+		lic.POST("/download", releasePublicH.Download)
 	}
 
-	auth := v1.Group("/auth", middleware.RateLimitByIP(20, time.Minute))
+	// Public invite acceptance — the token is proof of email
+	// ownership (we mailed it to the invitee), so no session auth
+	// is required, but we DO want rate limiting against token
+	// guessing. Live outside /license/* on purpose: this endpoint
+	// has nothing to do with the SDK identity.
+	v1.POST("/invites/accept",
+		middleware.RateLimitByIP(60, time.Minute),
+		authH.AcceptInvite(seatSvc))
+
+	// Release feed endpoints.
+	//
+	// Auth model: all channels (stable / beta / alpha / dev) are public.
+	// Trust comes from the artifact's ed25519 signature, verified by
+	// Sparkle/Velopack/Tauri on the client — not from URL secrecy.
+	// License enforcement happens at app start (POST /license/verify),
+	// not at update-feed time. To keep a pre-release channel private,
+	// don't publish to it; once published, treat the feed URL as public.
+	//
+	// Feed clients poll on a timer — sometimes once a minute. We give
+	// the per-IP bucket 4× the regular API limit so a single host
+	// running multiple installed products doesn't trip the 60/min default.
+	feedRateLimit := max(cfg.RateLimitAPI*4, 240)
+	feedMW := []gin.HandlerFunc{
+		middleware.RateLimitByIP(feedRateLimit, time.Minute),
+	}
+	v1.GET("/releases/:product_slug/feed.xml", append(feedMW, releasePublicH.FeedSparkle)...)
+	v1.GET("/releases/:product_slug/feed.json", append(feedMW, releasePublicH.FeedVelopack)...)
+	v1.GET("/releases/:product_slug/upgrade.json", append(feedMW, releasePublicH.FeedTauri)...)
+
+	// Old /releases/feed.* (no product slug, license-key auth) → 410 Gone
+	// with a migration hint. Pre-launch hard cutover; no live clients.
+	feedGone := func(c *gin.Context) {
+		response.Err(c, http.StatusGone, "FEED_PATH_REMOVED",
+			"feed URL changed: use /api/v1/releases/{product_slug}/feed.xml|feed.json|upgrade.json. "+
+				"Feeds are public; trust is established via the artifact's ed25519 signature.")
+	}
+	v1.GET("/releases/feed.xml", feedGone)
+	v1.GET("/releases/feed.json", feedGone)
+	v1.GET("/releases/upgrade.json", feedGone)
+	v1.GET("/releases/feed", feedGone)
+
+	auth := v1.Group("/auth", middleware.RateLimitByIP(cfg.RateLimitAuth, time.Minute))
 	{
 		auth.GET("/providers", authH.Providers)
 		auth.POST("/otp/send", authH.OTPSend)
@@ -305,14 +541,16 @@ func main() {
 	}
 
 	v1.POST("/webhook/stripe", middleware.RateLimitByIP(60, time.Minute), stripeH.Webhook)
-	v1.GET("/checkout/verify", middleware.RateLimitByIP(10, time.Minute), stripeH.VerifyCheckoutSession)
+	// Stripe verify is hit by every successful checkout return, so the
+	// limit is generous, but the endpoint must NOT be naked: each call
+	// proxies to Stripe's API and an attacker could otherwise force us
+	// to burn rate-budget against Stripe.
+	v1.GET("/checkout/verify",
+		middleware.RateLimitByIP(60, time.Minute),
+		stripeH.VerifyCheckoutSession)
 
 	// Unified checkout: GET /pay/:checkout_id → Stripe
 	r.GET("/pay/:checkout_id", stripeH.CheckoutByPlan)
-	v1.POST("/subscription/change-plan", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), stripeH.ChangePlan)
-	v1.POST("/subscription/cancel", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), stripeH.CancelSubscription)
-	v1.POST("/subscription/billing-portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), stripeH.CreatePortalSession)
-	v1.GET("/subscription/invoices", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), stripeH.ListInvoices)
 
 	portal := v1.Group("/portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin))
 	{
@@ -396,11 +634,36 @@ func main() {
 			}
 			response.OK(c, gin.H{"plans": active})
 		})
+		// Both portal guards parse the request body to extract
+		// license_key. Without an explicit cap a logged-in user could
+		// stream gigabytes through the body buffer; session auth is a
+		// weak defense against compromised credentials sending
+		// memory-exhaustion payloads. 64 KiB is comfortably above any
+		// real portal request (license_key + a handful of fields).
+		const portalGuardMaxBody = 64 * 1024
+
+		// readGuardBody is shared by both guards: cap the body, read
+		// it, restore an in-memory reader for the downstream handler
+		// (so c.ShouldBindJSON still sees the same bytes).
+		readGuardBody := func(c *gin.Context) ([]byte, bool) {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, portalGuardMaxBody)
+			body, err := io.ReadAll(c.Request.Body)
+			if err != nil {
+				response.Err(c, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+					"request body exceeds 64 KiB")
+				c.Abort()
+				return nil, false
+			}
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+			return body, true
+		}
+
 		// Portal license operations — verify the license belongs to the logged-in user
 		portalLicenseGuard := func(c *gin.Context) {
-			// Read request body to extract license_key, then restore it
-			body, _ := io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+			body, ok := readGuardBody(c)
+			if !ok {
+				return
+			}
 			var req struct {
 				LicenseKey string `json:"license_key"`
 			}
@@ -415,26 +678,38 @@ func main() {
 				c.Abort()
 				return
 			}
-			// Check license belongs to user (by email or seat)
+			// Check license belongs to user (by email or seat). Use
+			// EqualFold so mixed-case email rows don't lock the owner
+			// out of their own license — emails are case-insensitive
+			// per RFC 5321 in practice, and admin-created licenses
+			// may have stored mixed case.
 			lic, err := db.FindLicenseByKey(c, req.LicenseKey)
 			if err != nil {
 				c.Next() // let handler return proper 404
 				return
 			}
-			if lic.Email != emailStr {
-				// Check if user has a seat on this license
+			if !strings.EqualFold(lic.Email, emailStr) {
+				// Check if user has a seat on this license. Return
+				// the same 404 the handler returns when the license
+				// doesn't exist — otherwise the differential between
+				// 403 (exists but yours) and 404 (doesn't exist) is
+				// a license-existence oracle. License keys are 32-
+				// byte random so the keyspace defeats enumeration in
+				// practice, but the oracle is gratuitous.
 				if _, err := db.FindSeatByEmail(c, lic.ID, emailStr); err != nil {
-					response.Forbidden(c, "this license does not belong to you")
+					response.NotFound(c, "license not found")
 					c.Abort()
 					return
 				}
 			}
 			c.Next()
 		}
-		// Seat mutation guard — only license owner or seat admin/owner can add/remove seats
+		// Seat mutation guard — only license owner or accepted admin seat can add/remove seats
 		portalSeatMutationGuard := func(c *gin.Context) {
-			body, _ := io.ReadAll(c.Request.Body)
-			c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
+			body, ok := readGuardBody(c)
+			if !ok {
+				return
+			}
 			var req struct {
 				LicenseKey string `json:"license_key"`
 			}
@@ -444,20 +719,42 @@ func main() {
 			}
 			email, _ := c.Get("email")
 			emailStr, _ := email.(string)
+			// Defense in depth: a malformed JWT that produced an empty
+			// email claim must not fall through to seat lookups with
+			// "" — that would only match seats whose email column is
+			// literally empty (forbidden by schema, but belt-and-
+			// suspenders).
+			if emailStr == "" {
+				response.Unauthorized(c, "unauthorized")
+				c.Abort()
+				return
+			}
 			lic, err := db.FindLicenseByKey(c, req.LicenseKey)
 			if err != nil {
 				c.Next()
 				return
 			}
-			// License owner can always manage seats
-			if lic.Email == emailStr {
+			// License owner can always manage seats. EqualFold for the
+			// same case-folding reason as portalLicenseGuard.
+			if strings.EqualFold(lic.Email, emailStr) {
 				c.Next()
 				return
 			}
-			// Seat-based access: only owner/admin role can mutate
+			// Seat-based access: only ACCEPTED admin can mutate. Seat
+			// roles are 2-tier (admin / member) — the license owner is
+			// implicit via license.email and was already matched above.
+			// A still-pending admin invite confers no authority until
+			// the invitee has explicitly claimed the seat — otherwise
+			// possession of an unclaimed admin token would let an
+			// OTP-logged-in user act as admin on the license without
+			// going through the accept flow.
+			//
+			// Same shape as the 404 the handler returns when the
+			// license doesn't exist, so this middleware doesn't act
+			// as a "this license exists but isn't yours" oracle.
 			seat, err := db.FindSeatByEmail(c, lic.ID, emailStr)
-			if err != nil || (seat.Role != "owner" && seat.Role != "admin") {
-				response.Forbidden(c, "only license owner or admin can manage seats")
+			if err != nil || seat.AcceptedAt == nil || seat.Role != "admin" {
+				response.NotFound(c, "license not found")
 				c.Abort()
 				return
 			}
@@ -468,9 +765,58 @@ func main() {
 		portal.POST("/seats", portalLicenseGuard, seatH.ListSeats)
 		portal.POST("/seats/add", portalSeatMutationGuard, seatH.AddSeat)
 		portal.POST("/seats/remove", portalSeatMutationGuard, seatH.RemoveSeat)
+
+		// Self-service activation management — solves the "I lost my
+		// laptop, my activation slot is stuck" support ticket.
+		portalActH := handler.NewPortalActivationsHandler(db)
+		portal.GET("/licenses/:license_key/activations", portalActH.List)
+		portal.DELETE("/licenses/:license_key/activations/:activation_id", portalActH.Delete)
+
+		// Subscription self-service. The handlers already verify
+		// email ownership of the target license against the session
+		// (see stripe.go), so nesting under /portal makes the URL
+		// match the trust model rather than reading like a system
+		// endpoint sitting at the top level.
+		portal.POST("/subscription/change-plan", stripeH.ChangePlan)
+		portal.POST("/subscription/cancel", stripeH.CancelSubscription)
+		portal.POST("/subscription/billing-portal", stripeH.CreatePortalSession)
+		portal.GET("/subscription/invoices", stripeH.ListInvoices)
 	}
 
-	admin := v1.Group("/admin", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), middleware.AdminOnly(), middleware.RateLimitByIP(cfg.RateLimitAdmin, time.Minute))
+	// Admin route layout: three groups under /admin, all sharing the
+	// same Session-or-APIKey + rate-limit middlewares, differing only
+	// in which scope(s) RequireScope accepts.
+	//
+	//   - admin: routes that only an interactive admin (or a key with
+	//     the `admin` wildcard scope) can hit. Everything not in the
+	//     other two buckets defaults here.
+	//   - licWrite: license CRUD + lifecycle actions. Also reachable
+	//     by API keys with `licenses:write`. Intended for merchant
+	//     backends that provision licenses from their own checkout.
+	//   - relWrite: release CRUD + artifact upload + publish/yank.
+	//     Also reachable by `releases:write` keys for CI/CD that
+	//     publishes builds.
+	//
+	// Signing key endpoints stay admin-only — rotating product
+	// signing material is a one-off operator action, not a CI/CD
+	// concern, and a leaked CI key shouldn't be able to swap the
+	// product's release-signing identity.
+	baseAdminMW := []gin.HandlerFunc{
+		middleware.SessionOrAPIKey(cfg.JWTSecret, db, db.FindUserIsAdmin),
+		middleware.RateLimitByIP(cfg.RateLimitAdmin, time.Minute),
+	}
+	adminMW := append([]gin.HandlerFunc{}, baseAdminMW...)
+	adminMW = append(adminMW, middleware.RequireScope(model.ScopeAdmin))
+
+	licWriteMW := append([]gin.HandlerFunc{}, baseAdminMW...)
+	licWriteMW = append(licWriteMW, middleware.RequireScope(model.ScopeAdmin, model.ScopeLicensesWrite))
+
+	relWriteMW := append([]gin.HandlerFunc{}, baseAdminMW...)
+	relWriteMW = append(relWriteMW, middleware.RequireScope(model.ScopeAdmin, model.ScopeReleasesWrite))
+
+	admin := v1.Group("/admin", adminMW...)
+	licWrite := v1.Group("/admin", licWriteMW...)
+	relWrite := v1.Group("/admin", relWriteMW...)
 	{
 		admin.GET("/stats", adminH.Stats)
 
@@ -490,28 +836,30 @@ func main() {
 		admin.PUT("/entitlements/:id", adminH.UpdateEntitlement)
 		admin.DELETE("/entitlements/:id", adminH.DeleteEntitlement)
 
-		admin.GET("/licenses", adminH.ListLicenses)
-		admin.GET("/licenses/export", adminH.ExportLicenses)
-		admin.GET("/licenses/:id", adminH.GetLicense)
-		admin.POST("/licenses", adminH.CreateLicense)
-		admin.POST("/licenses/:id/refund", adminH.RefundLicense)
-		admin.POST("/licenses/:id/revoke", adminH.RevokeLicense)
-		admin.POST("/licenses/:id/suspend", adminH.SuspendLicense)
-		admin.POST("/licenses/:id/reinstate", adminH.ReinstateLicense)
-		admin.POST("/licenses/:id/change-plan", adminH.ChangeLicensePlan)
-		admin.GET("/licenses/:id/usage", adminH.ListLicenseUsage)
-		admin.POST("/licenses/:id/usage/reset", adminH.ResetLicenseUsage)
-		admin.GET("/licenses/:id/seats", adminH.ListLicenseSeats)
+		// ─── License CRUD + lifecycle: also reachable by licenses:write keys ───
+		licWrite.GET("/licenses", adminH.ListLicenses)
+		licWrite.GET("/licenses/export", adminH.ExportLicenses)
+		licWrite.GET("/licenses/:id", adminH.GetLicense)
+		licWrite.POST("/licenses", adminH.CreateLicense)
+		licWrite.POST("/licenses/:id/refund", adminH.RefundLicense)
+		licWrite.POST("/licenses/:id/revoke", adminH.RevokeLicense)
+		licWrite.POST("/licenses/:id/suspend", adminH.SuspendLicense)
+		licWrite.POST("/licenses/:id/reinstate", adminH.ReinstateLicense)
+		licWrite.POST("/licenses/:id/change-plan", adminH.ChangeLicensePlan)
+		licWrite.GET("/licenses/:id/usage", adminH.ListLicenseUsage)
+		licWrite.POST("/licenses/:id/usage/reset", adminH.ResetLicenseUsage)
+		licWrite.GET("/licenses/:id/seats", adminH.ListLicenseSeats)
 
-		admin.GET("/licenses/:id/addons", adminH.ListLicenseAddons)
-		admin.POST("/licenses/:id/addons", adminH.AddLicenseAddon)
-		admin.DELETE("/licenses/:id/addons/:addon_id", adminH.RemoveLicenseAddon)
-		admin.GET("/licenses/:id/floating", adminH.ListFloatingSessions)
+		licWrite.GET("/licenses/:id/addons", adminH.ListLicenseAddons)
+		licWrite.POST("/licenses/:id/addons", adminH.AddLicenseAddon)
+		licWrite.DELETE("/licenses/:id/addons/:addon_id", adminH.RemoveLicenseAddon)
+		licWrite.GET("/licenses/:id/floating", adminH.ListFloatingSessions)
 
-		admin.DELETE("/activations/:id", adminH.DeleteActivation)
+		licWrite.DELETE("/activations/:id", adminH.DeleteActivation)
 
 		admin.GET("/api-keys", adminH.ListAPIKeys)
 		admin.POST("/api-keys", adminH.CreateAPIKey)
+		admin.POST("/api-keys/:id/rotate", adminH.RotateAPIKey)
 		admin.DELETE("/api-keys/:id", adminH.DeleteAPIKey)
 
 		admin.GET("/webhooks", webhookAdminH.ListWebhooks)
@@ -519,6 +867,8 @@ func main() {
 		admin.PUT("/webhooks/:id", webhookAdminH.UpdateWebhook)
 		admin.DELETE("/webhooks/:id", webhookAdminH.DeleteWebhook)
 		admin.GET("/webhooks/:id/deliveries", webhookAdminH.ListDeliveries)
+		admin.GET("/webhooks/:id/deliveries/:delivery_id", webhookAdminH.GetDelivery)
+		admin.POST("/webhooks/:id/deliveries/:delivery_id/resend", webhookAdminH.ResendDelivery)
 		admin.POST("/webhooks/:id/test", webhookAdminH.TestWebhook)
 
 		admin.GET("/addons", adminH.ListAddons)
@@ -529,6 +879,8 @@ func main() {
 		admin.GET("/settings", adminH.GetSettings)
 		admin.PUT("/settings", adminH.UpdateSettings)
 		admin.POST("/settings/test-email", adminH.SendTestEmail)
+		admin.POST("/system/run-expiry-checks", adminH.RunExpiryChecks)
+		admin.POST("/system/run-metered-sync", adminH.RunMeteredSync)
 		admin.GET("/email-templates", adminH.GetEmailTemplates)
 
 		admin.GET("/team", adminH.ListTeamMembers)
@@ -547,6 +899,36 @@ func main() {
 		admin.GET("/audit-logs", adminH.ListAuditLogs)
 		admin.GET("/users", adminH.ListUsers)
 		admin.GET("/users/:id", adminH.GetUserDetail)
+
+		// ─── Releases (industry-standard bundle model) ───
+		// Resource: release with multiple platform artifacts (mirrors
+		// GitHub Releases / Keygen). Action endpoints under /actions/.
+		// Reachable by `releases:write` keys so CI/CD can ship builds
+		// without holding the admin wildcard.
+		relWrite.GET("/releases", releaseAdminH.List)
+		relWrite.GET("/releases/:id", releaseAdminH.Get)
+		relWrite.POST("/releases", releaseAdminH.Create)
+		relWrite.PATCH("/releases/:id", releaseAdminH.Update)
+		// Backward-compat shim: old PATCH /releases/:id/notes — drop after one cycle.
+		relWrite.PATCH("/releases/:id/notes", releaseAdminH.Update)
+		relWrite.DELETE("/releases/:id", releaseAdminH.Delete)
+
+		relWrite.POST("/releases/:id/artifacts", releaseAdminH.AddArtifact)
+		relWrite.POST("/releases/:id/artifacts/:aid/finalize", releaseAdminH.FinalizeArtifact)
+		relWrite.DELETE("/releases/:id/artifacts/:aid", releaseAdminH.DeleteArtifact)
+
+		relWrite.POST("/releases/:id/actions/publish", releaseAdminH.Publish)
+		relWrite.POST("/releases/:id/actions/yank", releaseAdminH.Yank)
+		relWrite.POST("/releases/:id/actions/unyank", releaseAdminH.Unyank)
+
+		// ─── Release signing keys (per product) ───
+		admin.POST("/products/:id/signing-key", releaseSigningH.Generate)
+		admin.POST("/products/:id/signing-key/rotate", releaseSigningH.Rotate)
+		admin.DELETE("/products/:id/signing-key", releaseSigningH.Deactivate)
+		admin.GET("/products/:id/signing-keys", releaseSigningH.List)
+		admin.GET("/products/:id/signing-key/public.pem", releaseSigningH.DownloadPublicKey)
+		admin.GET("/products/:id/signing-key/tauri-pubkey", releaseSigningH.DownloadPublicKeyTauri)
+
 	}
 
 	serveFrontend(r)

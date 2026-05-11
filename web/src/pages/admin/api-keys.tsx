@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, Copy, Eye, EyeOff, Package, Plus, Trash2 } from "lucide-react"
+import { Check, Copy, Eye, EyeOff, Package, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { showToast } from "@/components/toast"
@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -46,6 +47,7 @@ export default function APIKeysPage() {
   const [creating, setCreating] = useState(false)
   const [newKey, setNewKey] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null)
+  const [rotating, setRotating] = useState<{ id: string; name: string } | null>(null)
 
   const products = productsData?.products || []
   const keys = data?.api_keys || []
@@ -65,6 +67,17 @@ export default function APIKeysPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin", "api-keys"] })
       setDeleting(null)
+    },
+  })
+  const rotateMut = useMutation({
+    mutationFn: (id: string) => admin.rotateAPIKey(id),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["admin", "api-keys"] })
+      setRotating(null)
+      // Same NewKeyDialog used for create — admins copy the new
+      // secret immediately or lose it.
+      setNewKey(data.key)
+      showToast(`${t("apiKeys.rotate")} ✓`, "success")
     },
   })
 
@@ -134,11 +147,11 @@ export default function APIKeysPage() {
               <DataTableHeader>
                 <DataTableRow>
                   <DataTableHead>{t("common.name")}</DataTableHead>
-                  <DataTableHead>{t("common.product")}</DataTableHead>
+                  <DataTableHead>{t("apiKeys.scopes")}</DataTableHead>
                   <DataTableHead>{t("apiKeys.prefix")}</DataTableHead>
                   <DataTableHead>{t("apiKeys.lastUsed")}</DataTableHead>
                   <DataTableHead>{t("common.created")}</DataTableHead>
-                  <DataTableHead className="w-16" />
+                  <DataTableHead className="w-24" />
                 </DataTableRow>
               </DataTableHeader>
               <DataTableBody>
@@ -146,16 +159,50 @@ export default function APIKeysPage() {
                 {paginatedItems.map((k) => (
                   <DataTableRow key={k.id}>
                     <DataTableCell className="font-medium">{k.name}</DataTableCell>
-                    <DataTableCell className="text-muted-foreground">{k.product?.name || "-"}</DataTableCell>
+                    <DataTableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {(k.scopes || []).length === 0 && (
+                          <span className="text-xs text-muted-foreground italic">{t("apiKeys.scopesNone")}</span>
+                        )}
+                        {(k.scopes || []).map((s) => (
+                          <Badge key={s} variant="secondary" className="text-xs">
+                            {s}
+                          </Badge>
+                        ))}
+                      </div>
+                    </DataTableCell>
                     <DataTableCell>
                       <code className="text-xs bg-muted px-1.5 py-0.5 rounded">{k.prefix}...</code>
                     </DataTableCell>
-                    <DataTableCell className="text-muted-foreground text-xs">{formatDate(k.last_used)}</DataTableCell>
+                    <DataTableCell className="text-muted-foreground text-xs">
+                      {k.last_used ? (
+                        <div className="space-y-0.5">
+                          <div>{formatDate(k.last_used)}</div>
+                          {k.last_used_ip && (
+                            <div className="text-[10px] opacity-70">
+                              {t("apiKeys.lastUsedIP")} {k.last_used_ip}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        "-"
+                      )}
+                    </DataTableCell>
                     <DataTableCell className="text-muted-foreground text-xs">{formatDate(k.created_at)}</DataTableCell>
                     <DataTableCell>
-                      <Button variant="ghost" size="icon" onClick={() => setDeleting({ id: k.id, name: k.name })}>
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title={t("apiKeys.rotate")}
+                          onClick={() => setRotating({ id: k.id, name: k.name })}
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                        </Button>
+                        <Button variant="ghost" size="icon" onClick={() => setDeleting({ id: k.id, name: k.name })}>
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
                     </DataTableCell>
                   </DataTableRow>
                 ))}
@@ -190,6 +237,24 @@ export default function APIKeysPage() {
       {/* Show new key */}
       {newKey && <NewKeyDialog keyValue={newKey} onClose={() => setNewKey(null)} />}
 
+      {/* Rotate */}
+      <AlertDialog open={!!rotating} onOpenChange={() => setRotating(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {t("apiKeys.rotateTitle")} — "{rotating?.name}"
+            </AlertDialogTitle>
+            <AlertDialogDescription>{t("apiKeys.rotateConfirm")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => rotating && rotateMut.mutate(rotating.id)}>
+              {t("apiKeys.rotate")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Delete */}
       <AlertDialog open={!!deleting} onOpenChange={() => setDeleting(null)}>
         <AlertDialogContent>
@@ -214,6 +279,19 @@ export default function APIKeysPage() {
   )
 }
 
+// Scope catalogue. Order = display order in the dialog. Keep in
+// sync with model.AllScopes() on the server — new scopes need a row
+// here so admins can grant them via UI, not just curl.
+const SCOPE_OPTIONS: {
+  value: string
+  labelKey: "apiKeys.scopeAdmin" | "apiKeys.scopeLicensesWrite" | "apiKeys.scopeReleasesWrite"
+  descKey: "apiKeys.scopeAdminDesc" | "apiKeys.scopeLicensesWriteDesc" | "apiKeys.scopeReleasesWriteDesc"
+}[] = [
+  { value: "admin", labelKey: "apiKeys.scopeAdmin", descKey: "apiKeys.scopeAdminDesc" },
+  { value: "licenses:write", labelKey: "apiKeys.scopeLicensesWrite", descKey: "apiKeys.scopeLicensesWriteDesc" },
+  { value: "releases:write", labelKey: "apiKeys.scopeReleasesWrite", descKey: "apiKeys.scopeReleasesWriteDesc" },
+]
+
 function CreateAPIKeyDialog({
   open,
   onClose,
@@ -224,12 +302,27 @@ function CreateAPIKeyDialog({
   open: boolean
   onClose: () => void
   products: { id: string; name: string }[]
-  onSubmit: (d: { product_id: string; name: string }) => void
+  onSubmit: (d: { product_id?: string; name: string; scopes: string[] }) => void
   loading: boolean
 }) {
   const { t } = useI18n()
+  // Default: admin scope checked. Most admins minting their first
+  // key want the wildcard. Granular scopes are an opt-in for CI/CD
+  // or merchant backends where blast-radius matters.
+  const [scopes, setScopes] = useState<string[]>(["admin"])
   const [productId, setProductId] = useState(products[0]?.id || "")
   const [name, setName] = useState("")
+  const [error, setError] = useState("")
+
+  // The server rejects unknown scopes and empty scope arrays produce
+  // a fail-closed key. Block submit client-side so the user gets a
+  // pointer rather than a stale-looking 400.
+  const canSubmit = !!name.trim() && scopes.length > 0
+
+  const toggleScope = (value: string) => {
+    setError("")
+    setScopes((prev) => (prev.includes(value) ? prev.filter((s) => s !== value) : [...prev, value]))
+  }
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -241,31 +334,76 @@ function CreateAPIKeyDialog({
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            onSubmit({ product_id: productId, name })
+            if (scopes.length === 0) {
+              setError(t("apiKeys.atLeastOneScope"))
+              return
+            }
+            // product_id is informational/scoping for now — the
+            // server only treats it as a free-text foreign key.
+            // Leave it unset for system-wide keys (the common case
+            // for admin / *:write scopes).
+            onSubmit({
+              product_id: productId || undefined,
+              name: name.trim(),
+              scopes,
+            })
           }}
           className="space-y-4"
         >
           <div className="space-y-2">
-            <Label>{t("common.product")}</Label>
-            <Select value={productId} onValueChange={setProductId}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {products.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Label>{t("apiKeys.scopes")}</Label>
+            <div className="rounded-md border divide-y">
+              {SCOPE_OPTIONS.map((opt) => (
+                <label key={opt.value} className="flex items-start gap-3 px-3 py-2 cursor-pointer hover:bg-muted/40">
+                  <input
+                    type="checkbox"
+                    checked={scopes.includes(opt.value)}
+                    onChange={() => toggleScope(opt.value)}
+                    className="mt-1 h-4 w-4 accent-primary"
+                  />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium">
+                      {t(opt.labelKey)}{" "}
+                      <code className="text-[10px] text-muted-foreground bg-muted px-1 rounded">{opt.value}</code>
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{t(opt.descKey)}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+            {error && <p className="text-xs text-destructive">{error}</p>}
           </div>
+
+          {/* Product binding is optional and mostly informational —
+              shown only when no admin scope is granted, since admin
+              keys span products anyway. */}
+          {!scopes.includes("admin") && products.length > 0 && (
+            <div className="space-y-2">
+              <Label>
+                {t("common.product")} ({t("common.optional")})
+              </Label>
+              <Select value={productId || "none"} onValueChange={(v) => setProductId(v === "none" ? "" : v)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">—</SelectItem>
+                  {products.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+
           <div className="space-y-2">
             <Label>{t("common.name")}</Label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Production, Development"
+              placeholder="e.g. CI provisioning, Acme prod backend"
               required
             />
           </div>
@@ -273,7 +411,7 @@ function CreateAPIKeyDialog({
             <Button type="button" variant="outline" onClick={onClose}>
               {t("common.cancel")}
             </Button>
-            <Button type="submit" disabled={loading}>
+            <Button type="submit" disabled={loading || !canSubmit}>
               {loading ? t("common.loading") : t("common.create")}
             </Button>
           </div>

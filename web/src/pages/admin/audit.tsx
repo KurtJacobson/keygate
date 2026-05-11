@@ -22,15 +22,31 @@ export default function AuditPage() {
   const { t } = useI18n()
   const [entityFilter, setEntityFilter] = useState("")
   const [entityIdFilter, setEntityIdFilter] = useState("")
+  const [productFilter, setProductFilter] = useState("")
   const [page, setPage] = useState(0)
   const limit = 30
 
+  const { data: productsData } = useQuery({
+    queryKey: ["admin", "products", ""],
+    queryFn: () => admin.listProducts(),
+  })
+  const products = productsData?.products || []
+  // Grouped product list keeps the dropdown scannable as the product
+  // count grows — admins can see at a glance which deployment surface
+  // (desktop / saas / hybrid) an audit row belongs to.
+  const groupedProducts = {
+    desktop: products.filter((p) => p.type === "desktop"),
+    saas: products.filter((p) => p.type === "saas"),
+    hybrid: products.filter((p) => p.type === "hybrid"),
+  }
+
   const { data, isLoading } = useQuery({
-    queryKey: ["admin", "audit", entityFilter, entityIdFilter, page],
+    queryKey: ["admin", "audit", entityFilter, entityIdFilter, productFilter, page],
     queryFn: () =>
       admin.listAuditLogs({
         entity: entityFilter || undefined,
         entity_id: entityIdFilter || undefined,
+        product_id: productFilter || undefined,
         offset: page * limit,
         limit,
       }),
@@ -86,6 +102,38 @@ export default function AuditPage() {
           }}
           className="w-64"
         />
+        <Select
+          value={productFilter || "all"}
+          onValueChange={(v) => {
+            setProductFilter(v === "all" ? "" : v)
+            setPage(0)
+          }}
+        >
+          <SelectTrigger className="w-64">
+            <SelectValue placeholder={t("audit.filterProduct")} />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("audit.allProducts")}</SelectItem>
+            {groupedProducts.desktop.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                <span className="text-muted-foreground text-xs mr-2">[{t("products.desktop")}]</span>
+                {p.name}
+              </SelectItem>
+            ))}
+            {groupedProducts.saas.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                <span className="text-muted-foreground text-xs mr-2">[{t("products.saas")}]</span>
+                {p.name}
+              </SelectItem>
+            ))}
+            {groupedProducts.hybrid.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                <span className="text-muted-foreground text-xs mr-2">[{t("products.hybrid")}]</span>
+                {p.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <Card>

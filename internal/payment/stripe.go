@@ -34,6 +34,11 @@ type StripeHandler struct {
 	BaseURL       string
 	Email         *service.EmailService
 	WebhookSvc    *service.WebhookService
+	// Livemode is the environment this handler is configured for.
+	// Every inbound webhook event whose Livemode differs is rejected
+	// with 400 — guards against cross-environment delivery (test
+	// secret leaking + replay into prod, or vice versa).
+	Livemode bool
 
 	mu            sync.RWMutex
 	webhookSecret string // runtime-updatable, guarded by mu
@@ -204,6 +209,20 @@ func (h *StripeHandler) Webhook(c *gin.Context) {
 		return
 	}
 
+	// Livemode gate: even with a valid signature, a test-mode event
+	// must not be processed by a live server (or vice versa). Stripe
+	// allows separate webhook endpoints per mode, so the secret alone
+	// doesn't carry environment info — we check the event flag
+	// against our configured mode. Without this, a leaked test secret
+	// could replay arbitrary forged events at the production endpoint.
+	if event.Livemode != h.Livemode {
+		slog.Error("stripe webhook livemode mismatch",
+			"event_id", event.ID, "event_livemode", event.Livemode,
+			"server_livemode", h.Livemode)
+		response.BadRequest(c, "livemode mismatch")
+		return
+	}
+
 	// Idempotency: atomically check+record to prevent race conditions
 	if !h.Store.TryRecordProcessedEvent(c, "stripe", event.ID) {
 		c.JSON(http.StatusOK, gin.H{"received": true, "skipped": true})
@@ -353,13 +372,16 @@ func (h *StripeHandler) fulfillCheckout(ctx context.Context, email, customerID, 
 
 	productName := h.productName(ctx, plan.ProductID)
 	if email != "" {
+		// Use DecryptLicenseKey for forward compatibility — Phase C will
+		// drop the plaintext column and direct .LicenseKey reads will be empty.
+		displayKey := h.Store.DecryptLicenseKey(lic)
 		body := fmt.Sprintf(`<!DOCTYPE html>
 <html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
 <h2 style="color: #111;">Your %s License</h2>
 <p>Your <strong>%s</strong> license is ready.</p>
 <div style="background: #f4f4f5; border-radius: 8px; padding: 16px; margin: 16px 0; font-family: monospace; font-size: 18px; text-align: center; letter-spacing: 2px;">%s</div>
 <p style="color: #666; font-size: 14px;">Keep this key safe. You'll need it to activate your software.</p>
-</body></html>`, productName, plan.Name, lic.LicenseKey)
+</body></html>`, productName, plan.Name, displayKey)
 		_ = h.Store.EnqueueEmail(ctx, email, "Your license for "+productName, body)
 	}
 
@@ -477,10 +499,28 @@ func (h *StripeHandler) onInvoicePaid(ctx context.Context, raw json.RawMessage) 
 	if err != nil {
 		return
 	}
+	wasPastDue := lic.Status == model.StatusPastDue
+	// Capture the episode anchor BEFORE the write clears it.
+	// Without this, notifyPaymentRecovered would always see a nil
+	// PastDueAt and fall back to a license-wide tag — meaning the
+	// second past_due → recovery cycle ever silently drops the email.
+	var episode int64
+	if lic.PastDueAt != nil {
+		episode = lic.PastDueAt.Unix()
+	}
 	until := time.Unix(data.PeriodEnd, 0)
 	lic.ValidUntil = &until
 	lic.Status = model.StatusActive
-	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "valid_until", "status")
+	lic.PastDueAt = nil
+	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "valid_until", "status", "past_due_at")
+
+	// Recovery notification — shares the dedup path with
+	// onSubscriptionUpdated. Some flows emit invoice.paid without a
+	// matching subscription.updated, others emit both; both call
+	// this helper which fires at most once per cycle (per episode).
+	if wasPastDue {
+		h.notifyPaymentRecovered(ctx, lic, episode)
+	}
 }
 
 func (h *StripeHandler) onSubscriptionUpdated(ctx context.Context, raw json.RawMessage) {
@@ -498,22 +538,93 @@ func (h *StripeHandler) onSubscriptionUpdated(ctx context.Context, raw json.RawM
 		return
 	}
 
+	// Capture the prior state BEFORE mutating — recovery side-effects
+	// (clearing past_due_at, firing the recovered email) only run when
+	// the transition is actually past_due → active.
+	wasPastDue := lic.Status == model.StatusPastDue
+	// Anchor for the episode-scoped recovered notification tag.
+	// Captured here because the write below nulls past_due_at.
+	var episode int64
+	if lic.PastDueAt != nil {
+		episode = lic.PastDueAt.Unix()
+	}
+	cols := []string{"status", "valid_until", "canceled_at", "past_due_at"}
+
 	switch data.Status {
 	case "active":
 		lic.Status = model.StatusActive
+		// Recovery: customer fixed the card. Clear the dunning
+		// anchor so a fresh past_due episode in the future starts
+		// the ladder from day 0, not from the original failure.
+		lic.PastDueAt = nil
 	case "past_due":
+		// Idempotent entry: only stamp past_due_at on first entry
+		// (or when re-entering after a recovery). Without this a
+		// burst of repeated payment_failed webhooks would reset the
+		// clock each time and the day-7 / day-14 reminders would
+		// keep getting pushed out.
 		lic.Status = model.StatusPastDue
+		if lic.PastDueAt == nil {
+			now := time.Now()
+			lic.PastDueAt = &now
+		}
 	case "trialing":
 		lic.Status = model.StatusTrialing
 	case "canceled", "unpaid":
 		lic.Status = model.StatusCanceled
 		now := time.Now()
 		lic.CanceledAt = &now
+		lic.PastDueAt = nil
 	}
 
 	until := time.Unix(data.CurrentPeriodEnd, 0)
 	lic.ValidUntil = &until
-	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "status", "valid_until", "canceled_at")
+	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, cols...)
+
+	// Recovery notification fires only on past_due → active. Routed
+	// through notifyPaymentRecovered so concurrent webhooks (Stripe
+	// sometimes sends invoice.paid + customer.subscription.updated
+	// in parallel) collapse into one email + one webhook dispatch.
+	if wasPastDue && lic.Status == model.StatusActive {
+		h.notifyPaymentRecovered(ctx, lic, episode)
+	}
+}
+
+// notifyPaymentRecovered fires the recovery email + webhook exactly
+// once per past_due episode.
+//
+// `episode` is the past_due_at Unix epoch captured BEFORE the
+// recovery write clears the column. It enters the notification tag
+// so a license that lapses → recovers → lapses → recovers in the
+// same year gets the email twice (once per episode), instead of
+// being permanently silenced after the first recovery by the
+// notifications (license_id, tag) UNIQUE constraint.
+//
+// episode == 0 is a defensive fallback for legacy rows that
+// somehow lack past_due_at; we still dedupe on the bare tag in
+// that case to avoid a double-send within the single missing
+// episode.
+func (h *StripeHandler) notifyPaymentRecovered(ctx context.Context, lic *model.License, episode int64) {
+	tag := "payment_recovered"
+	if episode > 0 {
+		tag = fmt.Sprintf("payment_recovered:%d", episode)
+	}
+	productName := ""
+	if p, err := h.Store.FindProductByID(ctx, lic.ProductID); err == nil {
+		productName = p.Name
+	}
+	if h.Store.HasNotification(ctx, lic.ID, tag) {
+		return
+	}
+	if h.Email != nil {
+		h.Email.SendPaymentRecovered(lic.Email, productName)
+	}
+	h.Store.RecordNotification(ctx, lic.ID, tag)
+	if h.WebhookSvc != nil {
+		h.WebhookSvc.Dispatch(ctx, lic.ProductID, "license.payment_recovered", map[string]any{
+			"license_id": lic.ID, "email": lic.Email,
+		})
+	}
 }
 
 func (h *StripeHandler) onSubscriptionDeleted(ctx context.Context, raw json.RawMessage) {
@@ -531,7 +642,8 @@ func (h *StripeHandler) onSubscriptionDeleted(ctx context.Context, raw json.RawM
 	lic.Status = model.StatusCanceled
 	now := time.Now()
 	lic.CanceledAt = &now
-	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "status", "canceled_at")
+	lic.PastDueAt = nil
+	_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "status", "canceled_at", "past_due_at")
 
 	h.Store.Audit(ctx, &model.AuditLog{
 		Entity: "license", EntityID: lic.ID, Action: "canceled",
@@ -559,8 +671,10 @@ func (h *StripeHandler) onPaymentFailed(ctx context.Context, raw json.RawMessage
 	}
 
 	if lic.Status == model.StatusActive {
+		now := time.Now()
 		lic.Status = model.StatusPastDue
-		_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "status")
+		lic.PastDueAt = &now
+		_ = h.Store.UpdateLicenseAndSubscription(ctx, lic, "status", "past_due_at")
 
 		h.Store.Audit(ctx, &model.AuditLog{
 			Entity: "license", EntityID: lic.ID, Action: "payment_failed",
@@ -640,21 +754,27 @@ func (h *StripeHandler) CancelSubscription(c *gin.Context) {
 
 	if req.Immediate {
 		_, err = subscription.Cancel(lic.StripeSubscriptionID, nil)
+		if err != nil {
+			response.Internal(c)
+			return
+		}
+		now := time.Now()
+		lic.Status = model.StatusCanceled
+		lic.CanceledAt = &now
+		lic.ValidUntil = &now
+		_ = h.Store.UpdateLicense(c, lic, "status", "canceled_at", "valid_until")
 	} else {
-		_, err = subscription.Update(lic.StripeSubscriptionID, &stripe.SubscriptionParams{
+		sub, updateErr := subscription.Update(lic.StripeSubscriptionID, &stripe.SubscriptionParams{
 			CancelAtPeriodEnd: stripe.Bool(true),
 		})
-	}
-	if err != nil {
-		response.Internal(c)
-		return
-	}
-
-	if req.Immediate {
-		lic.Status = model.StatusCanceled
-		now := time.Now()
-		lic.CanceledAt = &now
-		_ = h.Store.UpdateLicense(c, lic, "status", "canceled_at")
+		if updateErr != nil {
+			response.Internal(c)
+			return
+		}
+		// Set ValidUntil to when Stripe will cancel the subscription
+		periodEnd := time.Unix(sub.CancelAt, 0)
+		lic.ValidUntil = &periodEnd
+		_ = h.Store.UpdateLicense(c, lic, "valid_until")
 	}
 
 	h.Store.Audit(c, &model.AuditLog{
@@ -690,15 +810,26 @@ func (h *StripeHandler) ChangePlan(c *gin.Context) {
 		return
 	}
 
-	newPlan, err := h.Store.FindPlanByStripePrice(c, req.NewPriceID)
-	if err != nil || newPlan == nil {
-		response.BadRequest(c, "invalid new_price_id")
-		return
-	}
-
+	// Order matters: license + ownership check FIRST so an attacker
+	// probing Bob's session against Alice's license_id can't
+	// distinguish "wrong owner" from "bad price" via response codes.
+	// Without this, a 400 on an unknown price_id leaks the existence
+	// of Alice's license.
 	lic, err := h.Store.FindLicenseByID(c, req.LicenseID)
 	if err != nil {
 		response.NotFound(c, "license not found")
+		return
+	}
+
+	emailVal, _ := c.Get("email")
+	if e, ok := emailVal.(string); !ok || lic.Email != e {
+		response.Forbidden(c, "not your license")
+		return
+	}
+
+	newPlan, err := h.Store.FindPlanByStripePrice(c, req.NewPriceID)
+	if err != nil || newPlan == nil {
+		response.BadRequest(c, "invalid new_price_id")
 		return
 	}
 
@@ -709,6 +840,26 @@ func (h *StripeHandler) ChangePlan(c *gin.Context) {
 
 	if newPlan.ProductID != lic.ProductID {
 		response.BadRequest(c, "new plan must belong to the same product")
+		return
+	}
+
+	// Plan availability gates. Without these a leaked price_id for a
+	// deprecated / non-subscription plan could be used to side-step
+	// the merchant's pricing strategy:
+	//   - inactive plans were taken off the public catalogue; honoring
+	//     them on change-plan reopens a discontinued tier.
+	//   - perpetual / trial plans aren't subscription-billable; Stripe
+	//     would happily swap the subscription item but the resulting
+	//     license_type wouldn't match the column semantics anywhere
+	//     downstream (renewal email, dunning, expiry).
+	if !newPlan.Active {
+		response.Err(c, http.StatusBadRequest, "PLAN_INACTIVE",
+			"target plan is no longer available")
+		return
+	}
+	if newPlan.LicenseType != "subscription" {
+		response.Err(c, http.StatusBadRequest, "NOT_SUBSCRIPTION_PLAN",
+			"change-plan only accepts subscription plans")
 		return
 	}
 

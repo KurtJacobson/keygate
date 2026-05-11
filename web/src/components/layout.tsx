@@ -10,6 +10,7 @@ import {
   Link2,
   LogOut,
   Package,
+  Rocket,
   ScrollText,
   Settings,
   User,
@@ -47,6 +48,7 @@ export function AdminLayout() {
         { to: "/admin/products", label: t("nav.products"), icon: Package },
         { to: "/admin/plans", label: t("nav.plans"), icon: Layers },
         { to: "/admin/addons", label: t("nav.addons"), icon: Blocks },
+        { to: "/admin/releases", label: t("nav.releases"), icon: Rocket },
       ],
     },
     {

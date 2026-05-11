@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"log/slog"
 	"strconv"
 
@@ -15,12 +13,13 @@ import (
 type UsageService struct {
 	store            *store.Store
 	webhook          *WebhookService
+	email            *EmailService
 	logger           *slog.Logger
 	warningThreshold float64
 }
 
-func NewUsageService(s *store.Store, wh *WebhookService, logger *slog.Logger, warningThreshold float64) *UsageService {
-	return &UsageService{store: s, webhook: wh, logger: logger, warningThreshold: warningThreshold}
+func NewUsageService(s *store.Store, wh *WebhookService, em *EmailService, logger *slog.Logger, warningThreshold float64) *UsageService {
+	return &UsageService{store: s, webhook: wh, email: em, logger: logger, warningThreshold: warningThreshold}
 }
 
 type RecordUsageInput struct {
@@ -46,15 +45,13 @@ func (s *UsageService) RecordUsage(ctx context.Context, in RecordUsageInput) (*R
 		in.Quantity = 1
 	}
 
-	lic, err := s.store.FindLicenseByKey(ctx, in.LicenseKey)
+	// Public SDK endpoint: collapse every "license unavailable"
+	// condition into 404 LICENSE_NOT_FOUND. A leaked "exists but
+	// suspended" would let attackers probe key validity without
+	// burning the activation rate limit.
+	lic, err := loadLicenseForSDK(ctx, s.store, in.LicenseKey, in.ProductID, "", true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return nil, apperr.Internal(err)
-	}
-	if in.ProductID != "" && lic.ProductID != in.ProductID {
-		return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		return nil, err
 	}
 
 	var quota *model.Entitlement
@@ -109,6 +106,21 @@ func (s *UsageService) RecordUsage(ctx context.Context, in RecordUsageInput) (*R
 		s.logger.Error("failed to record usage event", "error", err)
 	}
 
+	// Stripe metered-billing: when this entitlement is wired to a
+	// Stripe meter, enqueue a meter-event row carrying the delta
+	// from THIS call. The background MeteredBillingSync job pushes
+	// rows to Stripe's Billing Meter API; pushing absolutes here
+	// would double-count because Stripe accumulates server-side.
+	//
+	// Best-effort: a failure here doesn't roll back the in-Keygate
+	// accounting (we'd rather over-grant than under-bill on a
+	// transient blip; the next RecordUsage isn't affected).
+	if quota.StripeMeterEventName != "" {
+		if err := s.store.InsertMeteredEvent(ctx, lic.ID, in.Feature, periodKey, in.Quantity); err != nil {
+			s.logger.Error("metered enqueue failed", "license_id", lic.ID, "feature", in.Feature, "error", err)
+		}
+	}
+
 	newUsed := updated.Used
 	remaining := limit - newUsed
 	if limit == 0 {
@@ -119,11 +131,20 @@ func (s *UsageService) RecordUsage(ctx context.Context, in RecordUsageInput) (*R
 		ratio := float64(newUsed) / float64(limit)
 		prevUsed := newUsed - in.Quantity
 		prevRatio := float64(prevUsed) / float64(limit)
+		// Fire warning ONCE per crossing: previous reading was under
+		// threshold, current crosses it.
 		if ratio >= s.warningThreshold && prevRatio < s.warningThreshold {
 			if err := s.webhook.DispatchWithLog(ctx, lic.ProductID, model.EventQuotaWarning, map[string]any{
 				"license_id": lic.ID, "feature": in.Feature, "used": newUsed, "limit": limit, "threshold": s.warningThreshold,
 			}); err != nil {
 				s.logger.Error("webhook dispatch failed", "event", model.EventQuotaWarning, "error", err)
+			}
+			if s.email != nil && s.email.IsConfigured() && lic.Email != "" {
+				productName := ""
+				if lic.Product != nil {
+					productName = lic.Product.Name
+				}
+				s.email.SendQuotaWarning(lic.Email, productName, in.Feature, newUsed, limit, int(ratio*100))
 			}
 		}
 	}
@@ -150,15 +171,9 @@ type QuotaStatus struct {
 }
 
 func (s *UsageService) GetQuotaStatus(ctx context.Context, licenseKey, feature, productID string) (*QuotaStatus, error) {
-	lic, err := s.store.FindLicenseByKey(ctx, licenseKey)
+	lic, err := loadLicenseForSDK(ctx, s.store, licenseKey, productID, "", true)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
-		}
-		return nil, apperr.Internal(err)
-	}
-	if productID != "" && lic.ProductID != productID {
-		return nil, apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		return nil, err
 	}
 
 	var quota *model.Entitlement

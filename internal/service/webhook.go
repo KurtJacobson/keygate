@@ -139,6 +139,50 @@ func (s *WebhookService) failDelivery(ctx context.Context, d *model.WebhookDeliv
 	_ = s.store.UpdateWebhookDelivery(ctx, d)
 }
 
+// ErrWebhookDeliveryNotResendable is returned by Redispatch when the
+// target delivery exists but the parent webhook has been deleted or
+// disabled. Surfaces as 409 so the admin UI can disable the button
+// instead of silently failing.
+var ErrWebhookDeliveryNotResendable = fmt.Errorf("webhook delivery is not resendable")
+
+// Redispatch fires a fresh delivery using the payload of an existing
+// one. Industry-standard "resend" behaviour: the receiver sees the
+// SAME `data` (so its idempotency dedup still works) but a new
+// `X-Keygate-Delivery` header and a new row in the deliveries table
+// — so retries, response codes, and timestamps are tracked
+// independently of the original attempt.
+//
+// Returns the new delivery on success. Caller should audit-log the
+// admin action with both delivery IDs.
+func (s *WebhookService) Redispatch(ctx context.Context, deliveryID string) (*model.WebhookDelivery, error) {
+	orig, err := s.store.FindWebhookDeliveryByID(ctx, deliveryID)
+	if err != nil {
+		return nil, err
+	}
+	wh, err := s.store.FindWebhookByID(ctx, orig.WebhookID)
+	if err != nil {
+		return nil, ErrWebhookDeliveryNotResendable
+	}
+	if !wh.Active {
+		return nil, ErrWebhookDeliveryNotResendable
+	}
+	fresh := &model.WebhookDelivery{
+		WebhookID: wh.ID,
+		Event:     orig.Event,
+		Payload:   orig.Payload, // byte-identical replay
+		Status:    "pending",
+	}
+	if err := s.store.CreateWebhookDelivery(ctx, fresh); err != nil {
+		return nil, err
+	}
+	go func() {
+		s.sem <- struct{}{}
+		defer func() { <-s.sem }()
+		s.deliver(wh, fresh)
+	}()
+	return fresh, nil
+}
+
 func (s *WebhookService) ProcessRetries(ctx context.Context) {
 	deliveries, err := s.store.ListPendingDeliveries(ctx, 50)
 	if err != nil || len(deliveries) == 0 {

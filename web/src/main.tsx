@@ -8,6 +8,7 @@ import { showToast, ToastBridge, ToastProvider } from "@/components/toast"
 import { AuthProvider } from "@/hooks/use-auth"
 import { SiteConfigProvider } from "@/hooks/use-site-config"
 import { I18nProvider } from "@/i18n"
+import AcceptInvitePage from "@/pages/accept-invite"
 import AddonsPage from "@/pages/admin/addons"
 import AnalyticsPage from "@/pages/admin/analytics"
 import APIKeysPage from "@/pages/admin/api-keys"
@@ -17,6 +18,7 @@ import DashboardPage from "@/pages/admin/dashboard"
 import LicensesPage from "@/pages/admin/licenses"
 import PlansPage from "@/pages/admin/plans"
 import ProductsPage from "@/pages/admin/products"
+import ReleasesPage from "@/pages/admin/releases"
 import SettingsPage from "@/pages/admin/settings"
 import WebhooksPage from "@/pages/admin/webhooks"
 import CheckoutSuccessPage from "@/pages/checkout-success"
@@ -49,12 +51,14 @@ createRoot(document.getElementById("root")!).render(
                   <Routes>
                     <Route path="/login" element={<LoginPage />} />
                     <Route path="/checkout/success" element={<CheckoutSuccessPage />} />
+                    <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
                     {/* Admin */}
                     <Route path="/admin" element={<AdminLayout />}>
                       <Route index element={<DashboardPage />} />
                       <Route path="products" element={<ProductsPage />} />
                       <Route path="plans" element={<PlansPage />} />
+                      <Route path="releases" element={<ReleasesPage />} />
                       <Route path="licenses" element={<LicensesPage />} />
                       <Route path="api-keys" element={<APIKeysPage />} />
                       <Route path="webhooks" element={<WebhooksPage />} />

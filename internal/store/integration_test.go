@@ -35,11 +35,12 @@ func createTestLicense(t *testing.T, s *store.Store, ctx context.Context) *model
 		t.Fatalf("create product: %v", err)
 	}
 	plan := &model.Plan{
-		ProductID:   product.ID,
-		Name:        "Test Plan",
-		Slug:        "test-plan-" + suffix,
-		LicenseType: "subscription",
-		GraceDays:   7,
+		ProductID:    product.ID,
+		Name:         "Test Plan",
+		Slug:         "test-plan-" + suffix,
+		LicenseType:  "subscription",
+		LicenseModel: "standard",
+		GraceDays:    7,
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {
 		t.Fatalf("create plan: %v", err)
@@ -170,11 +171,12 @@ func TestCreateLicenseWithSubscription_Atomic(t *testing.T) {
 	}
 
 	plan := &model.Plan{
-		ProductID:   product.ID,
-		Name:        "Pro",
-		Slug:        "pro",
-		LicenseType: "subscription",
-		GraceDays:   7,
+		ProductID:    product.ID,
+		Name:         "Pro",
+		Slug:         "pro",
+		LicenseType:  "subscription",
+		LicenseModel: "standard",
+		GraceDays:    7,
 	}
 	if err := s.CreatePlan(ctx, plan); err != nil {
 		t.Fatalf("create plan: %v", err)
@@ -212,12 +214,13 @@ func TestCreateLicenseWithSubscription_Atomic(t *testing.T) {
 	}
 
 	trialPlan := &model.Plan{
-		ProductID:   product.ID,
-		Name:        "Trial",
-		Slug:        "trial",
-		LicenseType: "trial",
-		TrialDays:   14,
-		GraceDays:   0,
+		ProductID:    product.ID,
+		Name:         "Trial",
+		Slug:         "trial",
+		LicenseType:  "trial",
+		LicenseModel: "standard",
+		TrialDays:    14,
+		GraceDays:    0,
 	}
 	if err := s.CreatePlan(ctx, trialPlan); err != nil {
 		t.Fatalf("create trial plan: %v", err)
@@ -391,7 +394,7 @@ func TestUpdateLicenseAndSubscription_Atomic(t *testing.T) {
 	product := &model.Product{Name: "Sync Test", Slug: "sync-" + time.Now().Format("150405.000000"), Type: "saas"}
 	_ = s.CreateProduct(ctx, product)
 
-	plan := &model.Plan{ProductID: product.ID, Name: "Basic", Slug: "basic", LicenseType: "subscription"}
+	plan := &model.Plan{ProductID: product.ID, Name: "Basic", Slug: "basic", LicenseType: "subscription", LicenseModel: "standard"}
 	_ = s.CreatePlan(ctx, plan)
 
 	lic := &model.License{
