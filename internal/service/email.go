@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"time"
@@ -143,9 +144,19 @@ func (s *EmailService) Send(to, subject, htmlBody string) error {
 // own guard. That's the safe default; relay-style deployments that
 // genuinely want plaintext auth can run their own postfix in front.
 func (s *EmailService) sendOnce(addr, to string, msg []byte) error {
-	// Validate addresses to match what net/smtp.SendMail does — no
-	// CR/LF that could be used for SMTP injection.
-	if err := validateSMTPLine(s.from); err != nil {
+	// The SMTP envelope sender (MAIL FROM, RFC 5321) must be a BARE
+	// address — "noreply@x.com", never "Keygate <noreply@x.com>".
+	// The display-name form is only legal in the RFC 5322 "From:"
+	// header (which Send() builds separately). Strict MTAs like
+	// Postmark reject a display-name envelope with
+	// "501 Bad sender address syntax". Parse once here so operators
+	// can keep configuring the friendly form in SMTP_FROM.
+	envelopeFrom, err := parseEnvelopeAddress(s.from)
+	if err != nil {
+		return fmt.Errorf("invalid SMTP_FROM %q: %w", s.from, err)
+	}
+	// CR/LF guard (SMTP injection) — same as net/smtp.SendMail.
+	if err := validateSMTPLine(envelopeFrom); err != nil {
 		return err
 	}
 	if err := validateSMTPLine(to); err != nil {
@@ -189,7 +200,7 @@ func (s *EmailService) sendOnce(addr, to string, msg []byte) error {
 		}
 	}
 
-	if err := c.Mail(s.from); err != nil {
+	if err := c.Mail(envelopeFrom); err != nil {
 		return fmt.Errorf("mail from: %w", err)
 	}
 	if err := c.Rcpt(to); err != nil {
@@ -279,6 +290,35 @@ func (a *loginAuth) Next(fromServer []byte, more bool) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("smtp: unexpected LOGIN challenge: %q", fromServer)
 	}
+}
+
+// parseEnvelopeAddress extracts the bare RFC 5321 address used for
+// the SMTP MAIL FROM command. Accepts both forms operators commonly
+// put in SMTP_FROM:
+//
+//	"noreply@example.com"               → noreply@example.com
+//	"Keygate <noreply@example.com>"     → noreply@example.com
+//	"\"Keygate Billing\" <a@b.com>"     → a@b.com
+//
+// The display-name form is kept verbatim in the message's "From:"
+// header (built in Send) so recipients still see "Keygate"; only the
+// envelope is stripped to the bare address.
+func parseEnvelopeAddress(from string) (string, error) {
+	from = strings.TrimSpace(from)
+	if from == "" {
+		return "", errors.New("empty address")
+	}
+	a, err := mail.ParseAddress(from)
+	if err != nil {
+		// Fall back: maybe it's already a bare addr-spec that
+		// ParseAddress is being strict about (rare). Validate the
+		// minimal shape before giving up.
+		if strings.Count(from, "@") == 1 && !strings.ContainsAny(from, "<> ") {
+			return from, nil
+		}
+		return "", err
+	}
+	return a.Address, nil
 }
 
 // validateSMTPLine rejects strings containing CR or LF so callers

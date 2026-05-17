@@ -238,6 +238,36 @@ func TestValidateSMTPLine(t *testing.T) {
 	}
 }
 
+// TestParseEnvelopeAddress pins the RFC 5321/5322 split that broke
+// Postmark ("501 Bad sender address syntax"): SMTP_FROM may carry a
+// display name for the header, but the envelope MAIL FROM must be
+// the bare addr-spec.
+func TestParseEnvelopeAddress(t *testing.T) {
+	ok := []struct{ in, want string }{
+		{"noreply@example.com", "noreply@example.com"},
+		{"Keygate <noreply@example.com>", "noreply@example.com"},
+		{`"Keygate Billing" <billing@example.com>`, "billing@example.com"},
+		{"  Keygate <noreply@example.com>  ", "noreply@example.com"},
+		{"a.b+tag@sub.example.co.uk", "a.b+tag@sub.example.co.uk"},
+	}
+	for _, tc := range ok {
+		got, err := parseEnvelopeAddress(tc.in)
+		if err != nil {
+			t.Errorf("parseEnvelopeAddress(%q) errored: %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("parseEnvelopeAddress(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	bad := []string{"", "   ", "not-an-email", "two@@at.com", "name <>"}
+	for _, in := range bad {
+		if got, err := parseEnvelopeAddress(in); err == nil {
+			t.Errorf("parseEnvelopeAddress(%q) should have errored, got %q", in, got)
+		}
+	}
+}
+
 // ─── In-process SMTP test server ────────────────────────────
 
 type mockSMTPConfig struct {
