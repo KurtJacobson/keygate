@@ -22,7 +22,7 @@ import { Separator } from "@/components/ui/separator"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useAuth } from "@/hooks/use-auth"
 import { useI18n } from "@/i18n"
-import { type Entitlement, type License, portal, type Seat } from "@/lib/api"
+import { type Activation, type Entitlement, type License, portal, type Seat } from "@/lib/api"
 import { cn, formatDate, statusColor } from "@/lib/utils"
 
 export default function PortalLicensesPage() {
@@ -187,7 +187,7 @@ function LicenseCard({ license: lic }: { license: License }) {
           </TabsList>
 
           <TabsContent value="overview" className="mt-4">
-            <ActivationsSection activations={lic.activations || []} />
+            <ActivationsSection license={lic} />
           </TabsContent>
 
           <TabsContent value="entitlements" className="mt-4">
@@ -224,27 +224,157 @@ function LicenseCard({ license: lic }: { license: License }) {
   )
 }
 
-function ActivationsSection({ activations }: { activations: NonNullable<License["activations"]> }) {
+function ActivationsSection({ license }: { license: License }) {
   const { t } = useI18n()
-  if (activations.length === 0) {
-    return <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noDevices")}</p>
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  const [removing, setRemoving] = useState<Activation | null>(null)
+
+  // The dedicated activations endpoint requires the caller to be the
+  // license owner OR an *accepted* seat (portal_activations.go:84 —
+  // "pending invites confer no authority", a deliberate security
+  // gate). But /portal/licenses still lists the license for a
+  // PENDING (unaccepted) seat too, so naively calling the endpoint
+  // here would 404 and render a false "no devices" for a license we
+  // just showed. Decide authorisation from the embedded data first;
+  // only hit the gated endpoint when authorised. Unauthorised users
+  // fall back to the read-only embedded list (the prior behaviour —
+  // no regression, no false-empty, no delete controls).
+  const myEmail = user?.email?.toLowerCase() ?? ""
+  const isOwner = !!myEmail && license.email?.toLowerCase() === myEmail
+  const mySeat = (license.seats || []).find((s) => s.email.toLowerCase() === myEmail && !s.removed_at)
+  const isAcceptedSeat = !!mySeat?.accepted_at
+  const authorized = isOwner || isAcceptedSeat
+
+  const actQuery = useQuery({
+    queryKey: ["portal", "activations", license.id],
+    queryFn: () => portal.listActivations(license.license_key),
+    enabled: authorized,
+  })
+
+  // Declared before any early return so the hook order is stable
+  // every render (rules of hooks). Only exercised on the authorised
+  // manage path below.
+  const removeMut = useMutation({
+    mutationFn: (activationId: string) => portal.removeActivation(license.license_key, activationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["portal", "activations", license.id] })
+      // The card header's "N / max" count is rendered from
+      // lic.activations, which comes from the separate
+      // ["portal","licenses"] query — invalidate it too, else the
+      // header keeps showing the pre-delete count while the list
+      // below already dropped the row.
+      qc.invalidateQueries({ queryKey: ["portal", "licenses"] })
+    },
+    // Errors surface via the global MutationCache toast (main.tsx).
+    // Just close the dialog either way so the row doesn't get stuck.
+    onSettled: () => {
+      setRemoving(null)
+    },
+  })
+
+  // Read-only path for unauthorised (pending-seat) viewers, and a
+  // defensive fallback if the gated query errors for an authorised
+  // user (race / transient). Uses the activations embedded in the
+  // ["portal","licenses"] payload, which is populated regardless of
+  // seat-accept state — so we never claim "no devices" falsely.
+  const useReadOnly = !authorized || actQuery.isError
+  if (useReadOnly) {
+    const embedded = license.activations || []
+    return (
+      <div className="space-y-3">
+        <p className="text-sm font-medium">
+          {t("portal.activeDevices")} ({embedded.length}
+          {license.plan?.max_activations ? `/${license.plan.max_activations}` : ""})
+        </p>
+        {embedded.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noDevices")}</p>
+        ) : (
+          <div className="space-y-2">
+            {embedded.map((act) => (
+              <div key={act.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <code className="text-xs truncate">{act.identifier}</code>
+                    {act.label && <span className="text-muted-foreground text-xs">({act.label})</span>}
+                    <span className="text-xs text-muted-foreground capitalize">{act.identifier_type}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {t("portal.lastVerified")} {formatDate(act.last_verified)}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    )
   }
 
+  const activations = actQuery.data?.activations || []
+  const max = actQuery.data?.max ?? 0
+
   return (
-    <div className="space-y-2">
-      <p className="text-sm font-medium mb-2">{t("portal.activeDevices")}</p>
-      {activations.map((act) => (
-        <div key={act.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
-          <div>
-            <code className="text-xs">{act.identifier}</code>
-            {act.label && <span className="text-muted-foreground ml-2">({act.label})</span>}
-            <span className="text-xs text-muted-foreground ml-2 capitalize">{act.identifier_type}</span>
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {t("portal.lastVerified")} {formatDate(act.last_verified)}
-          </span>
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">
+          {t("portal.activeDevices")} ({activations.length}
+          {max > 0 ? `/${max}` : ""})
+        </p>
+      </div>
+
+      {actQuery.isLoading ? (
+        <div className="h-16 animate-pulse bg-muted rounded-lg" />
+      ) : activations.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noDevices")}</p>
+      ) : (
+        <div className="space-y-2">
+          {activations.map((act) => (
+            <div key={act.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <code className="text-xs truncate">{act.identifier}</code>
+                  {act.label && <span className="text-muted-foreground text-xs">({act.label})</span>}
+                  <span className="text-xs text-muted-foreground capitalize">{act.identifier_type}</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {t("portal.lastVerified")} {formatDate(act.last_verified)}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 text-destructive"
+                disabled={removeMut.isPending && removeMut.variables === act.id}
+                onClick={() => setRemoving(act)}
+                aria-label={t("portal.removeDevice")}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          ))}
         </div>
-      ))}
+      )}
+
+      <AlertDialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("portal.removeDeviceTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("portal.removeDeviceDesc").replace("{device}", removing?.label || removing?.identifier || "")}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => removing && removeMut.mutate(removing.id)}
+            >
+              {t("portal.removeDevice")}
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

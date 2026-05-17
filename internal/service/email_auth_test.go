@@ -277,10 +277,10 @@ type mockSMTPConfig struct {
 }
 
 type mockSMTP struct {
-	t        *testing.T
-	ln       net.Listener
-	wg       sync.WaitGroup
-	tlsCert  tls.Certificate
+	t       *testing.T
+	ln      net.Listener
+	wg      sync.WaitGroup
+	tlsCert tls.Certificate
 
 	mu            sync.Mutex
 	selectedMech  string
@@ -303,10 +303,10 @@ func newMockSMTP(t *testing.T, cfg mockSMTPConfig) *mockSMTP {
 	return srv
 }
 
-func (s *mockSMTP) Port() int                  { return s.ln.Addr().(*net.TCPAddr).Port }
-func (s *mockSMTP) SelectedMech() string       { s.mu.Lock(); defer s.mu.Unlock(); return s.selectedMech }
-func (s *mockSMTP) AuthSucceeded() bool        { s.mu.Lock(); defer s.mu.Unlock(); return s.authSucceeded }
-func (s *mockSMTP) Close()                     { _ = s.ln.Close(); s.wg.Wait() }
+func (s *mockSMTP) Port() int            { return s.ln.Addr().(*net.TCPAddr).Port }
+func (s *mockSMTP) SelectedMech() string { s.mu.Lock(); defer s.mu.Unlock(); return s.selectedMech }
+func (s *mockSMTP) AuthSucceeded() bool  { s.mu.Lock(); defer s.mu.Unlock(); return s.authSucceeded }
+func (s *mockSMTP) Close()               { _ = s.ln.Close(); s.wg.Wait() }
 
 func (s *mockSMTP) acceptLoop(cfg mockSMTPConfig) {
 	defer s.wg.Done()
@@ -495,4 +495,3 @@ func genSelfSignedCert(t *testing.T) tls.Certificate {
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: priv}
 }
-

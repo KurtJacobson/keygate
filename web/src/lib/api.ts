@@ -117,6 +117,17 @@ export const portal = {
   // Customer-facing team management for multi-seat plans. Session-
   // authed (cookie); the body's license_key only names the target
   // license — the cookie is the actual authentication.
+  // Self-service device/activation management. Backend authorises the
+  // license owner OR any accepted seat (member or admin) — a teammate
+  // who lost a laptop can free their own slot without a support ticket
+  // (internal/handler/portal_activations.go). license_key is in the
+  // path; the session cookie is the actual auth.
+  listActivations: (licenseKey: string) =>
+    get<{ activations: Activation[]; max: number }>(`/portal/licenses/${encodeURIComponent(licenseKey)}/activations`),
+  removeActivation: (licenseKey: string, activationId: string) =>
+    del<{ status: string }>(
+      `/portal/licenses/${encodeURIComponent(licenseKey)}/activations/${encodeURIComponent(activationId)}`,
+    ),
   listSeats: (licenseKey: string) => post<{ seats: Seat[] }>("/portal/seats", { license_key: licenseKey }),
   addSeat: (data: { license_key: string; email: string; role?: string }) => post<Seat>("/portal/seats/add", data),
   removeSeat: (data: { license_key: string; seat_id: string }) =>

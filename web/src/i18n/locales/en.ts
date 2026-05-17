@@ -422,6 +422,10 @@ const en = {
   "portal.removeMember": "Remove member",
   "portal.removeMemberTitle": "Remove team member?",
   "portal.removeMemberDesc": "{email} will lose access immediately. You can re-invite them later.",
+  "portal.removeDevice": "Remove device",
+  "portal.removeDeviceTitle": "Remove this device?",
+  "portal.removeDeviceDesc":
+    "{device} will lose its activation immediately and free up a slot. The device can re-activate later if a slot is available.",
   "portal.noMembers": "No team members yet.",
   "portal.seatLimit": "Seat limit reached. Upgrade your plan to add more members.",
   "portal.inviteDesc": "Invite a new member to this license.",

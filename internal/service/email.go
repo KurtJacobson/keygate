@@ -133,9 +133,9 @@ func (s *EmailService) Send(to, subject, htmlBody string) error {
 //     extension list refreshes — AUTH only appears post-TLS on
 //     stricter servers).
 //  5. Pick AUTH mechanism from the post-TLS list:
-//       - PLAIN if advertised (standard, base64 single round-trip)
-//       - else LOGIN if advertised (Microsoft, some older relays)
-//       - else error out
+//     - PLAIN if advertised (standard, base64 single round-trip)
+//     - else LOGIN if advertised (Microsoft, some older relays)
+//     - else error out
 //  6. MAIL/RCPT/DATA/QUIT.
 //
 // We intentionally do NOT speak SMTP over plaintext when credentials
