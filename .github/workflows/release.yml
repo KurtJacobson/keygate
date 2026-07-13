@@ -11,7 +11,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: tabloy/keygate
+  IMAGE_NAME: kurtjacobson/keygate
 
 jobs:
   release:
