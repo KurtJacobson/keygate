@@ -612,6 +612,14 @@ paths:
         If `version` is omitted, returns the latest published release
         in the channel that has an artifact for `platform`. Channel
         fallback chain applies (beta sees beta + stable, etc.).
+
+        **Support window (perpetual fallback):** when the license has
+        a `support_until` date, only releases *published* before that
+        date are downloadable — forever. Omitting `version` resolves
+        the newest covered release (lapsed customers can always
+        reinstall what they're entitled to); pinning a newer version
+        returns `403 SUPPORT_EXPIRED`. Licenses without a support
+        window are unrestricted.
       requestBody:
         required: true
         content:
@@ -673,7 +681,10 @@ paths:
         "400":
           description: Invalid platform / channel
         "403":
-          description: License inactive (cannot download)
+          description: |
+            - License inactive (cannot download)
+            - `SUPPORT_EXPIRED` — the pinned version was published
+              after the license's support window ended
         "404":
           description: License not found or no release matches
         "410":
@@ -869,6 +880,16 @@ components:
               type: string
               format: date-time
               nullable: true
+            support_until:
+              type: string
+              format: date-time
+              nullable: true
+              description: |
+                End of the paid support/updates window (perpetual
+                license + paid support model). Absent/null = unlimited.
+                The license stays valid past this date — it only gates
+                release downloads (see /license/download). Also present
+                in the signed token as `sup` (unix seconds, 0 = unlimited).
             features:
               type: object
               description: "Key-value map of feature entitlements"
