@@ -866,6 +866,10 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		// plan decides: trial plans get now+trial_days, everything else
 		// is perpetual. When set it wins over the trial default.
 		ValidUntil string `json:"valid_until"`
+		// SupportUntil sets an explicit paid-support end date (RFC
+		// 3339). Empty means the plan decides: now+support_days when
+		// the plan sets support_days, otherwise unlimited.
+		SupportUntil string `json:"support_until"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, plan_id, and email are required")
@@ -900,6 +904,19 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 			return
 		}
 		validUntil = &ts
+	}
+	var supportUntil *time.Time
+	if req.SupportUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.SupportUntil)
+		if err != nil {
+			response.BadRequest(c, "support_until must be an RFC 3339 timestamp")
+			return
+		}
+		if !ts.After(time.Now()) {
+			response.BadRequest(c, "support_until must be in the future")
+			return
+		}
+		supportUntil = &ts
 	}
 
 	// Look up plan first to determine license type and set appropriate fields
@@ -947,6 +964,15 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	} else if plan.LicenseType == "trial" && plan.TrialDays > 0 {
 		until := time.Now().Add(time.Duration(plan.TrialDays) * 24 * time.Hour)
 		l.ValidUntil = &until
+	}
+
+	// Set support_until the same way: explicit value wins, otherwise
+	// the plan's support_days default applies (0 = unlimited support).
+	if supportUntil != nil {
+		l.SupportUntil = supportUntil
+	} else if plan.SupportDays > 0 {
+		until := time.Now().Add(time.Duration(plan.SupportDays) * 24 * time.Hour)
+		l.SupportUntil = &until
 	}
 
 	// Create license and subscription in a single transaction to prevent orphan records
@@ -1148,6 +1174,54 @@ func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 		Entity: "license", EntityID: id, Action: "valid_until_changed",
 		ActorType: "admin", ActorID: adminID(c),
 		Changes: map[string]any{"valid_until": req.ValidUntil},
+	})
+	response.OK(c, lic)
+}
+
+// SetLicenseSupportUntil sets or clears a license's paid-support end
+// date (the "support renewal" action). An empty valid_until grants
+// unlimited support. Unlike valid_until this never interacts with
+// license status — support lapse is not a lifecycle event, it only
+// gates release downloads (perpetual fallback).
+func (h *AdminHandler) SetLicenseSupportUntil(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	var req struct {
+		SupportUntil string `json:"support_until"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+
+	lic, err := h.Store.FindLicenseByID(c, id)
+	if err != nil {
+		response.NotFound(c, "license not found")
+		return
+	}
+
+	var supportUntil *time.Time
+	if req.SupportUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.SupportUntil)
+		if err != nil {
+			response.BadRequest(c, "support_until must be an RFC 3339 timestamp or empty")
+			return
+		}
+		supportUntil = &ts
+	}
+
+	lic.SupportUntil = supportUntil
+	if err := h.Store.UpdateLicense(c, lic, "support_until"); err != nil {
+		response.Internal(c)
+		return
+	}
+
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "license", EntityID: id, Action: "support_until_changed",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{"support_until": req.SupportUntil},
 	})
 	response.OK(c, lic)
 }
