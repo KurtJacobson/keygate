@@ -45,6 +45,7 @@ func (c *ExpiryChecker) RunAll(ctx context.Context) {
 	c.MarkPastDueAsExpired(ctx)
 	c.SendExpiryReminders(ctx)
 	c.SendRenewalReminders(ctx)
+	c.SendSupportReminders(ctx)
 	c.SendPaymentFailureReminders(ctx)
 	c.CleanupExpiredActivations(ctx)
 	c.SyncSubscriptionStates(ctx)
@@ -178,6 +179,76 @@ func (c *ExpiryChecker) SendExpiryReminders(ctx context.Context) {
 			c.store.RecordNotification(ctx, lic.ID, r.tag)
 			c.logger.Info("expiry reminder sent", "license_id", lic.ID, "days", r.days)
 		}
+	}
+}
+
+// SendSupportReminders emails licenses whose paid-support window is
+// ending (30d / 7d ahead) or has just ended (scanned up to 7 days
+// back so a server outage doesn't swallow the notice). Wider lead
+// time than license expiry on purpose: support lapse is soft — the
+// software keeps working, only updates stop — so this is renewal-
+// sales mail, not an outage warning.
+//
+// Dedup tags encode support_until's epoch (like the dunning ladder
+// encodes past_due_at): when the admin renews support to a new date,
+// the next lapse gets a fresh tag namespace and a full new reminder
+// cycle instead of being suppressed by last year's tags.
+func (c *ExpiryChecker) SendSupportReminders(ctx context.Context) {
+	reminders := []struct {
+		days int
+		tag  string
+	}{
+		{30, "support_30d"},
+		{7, "support_7d"},
+	}
+
+	now := time.Now()
+	for _, r := range reminders {
+		to := now.Add(time.Duration(r.days) * 24 * time.Hour)
+		licenses, err := c.store.FindSupportExpiringLicenses(ctx, now, to)
+		if err != nil {
+			c.logger.Error("support reminder check failed", "error", err)
+			continue
+		}
+		for _, lic := range licenses {
+			tag := r.tag + ":" + strconvI64(lic.SupportUntil.Unix())
+			if c.store.HasNotification(ctx, lic.ID, tag) {
+				continue
+			}
+			productName := ""
+			if lic.Product != nil {
+				productName = lic.Product.Name
+			}
+			c.email.SendSupportExpiring(lic.Email, productName,
+				c.store.DecryptLicenseKey(lic), lic.SupportUntil.Format("2006-01-02"))
+			c.store.RecordNotification(ctx, lic.ID, tag)
+			c.logger.Info("support reminder sent", "license_id", lic.ID, "days", r.days)
+		}
+	}
+
+	// "Support has ended" — window [now-7d, now] catches lapses even
+	// if the checker was down when the date passed.
+	lapsed, err := c.store.FindSupportExpiringLicenses(ctx, now.Add(-7*24*time.Hour), now)
+	if err != nil {
+		c.logger.Error("support lapse check failed", "error", err)
+		return
+	}
+	for _, lic := range lapsed {
+		tag := "support_ended:" + strconvI64(lic.SupportUntil.Unix())
+		if c.store.HasNotification(ctx, lic.ID, tag) {
+			continue
+		}
+		productName := ""
+		if lic.Product != nil {
+			productName = lic.Product.Name
+		}
+		c.email.SendSupportEnded(lic.Email, productName, c.store.DecryptLicenseKey(lic))
+		c.store.RecordNotification(ctx, lic.ID, tag)
+		c.webhook.Dispatch(ctx, lic.ProductID, "license.support_ended", map[string]any{
+			"license_id": lic.ID, "email": lic.Email,
+			"support_until": lic.SupportUntil.Format(time.RFC3339),
+		})
+		c.logger.Info("support ended notice sent", "license_id", lic.ID)
 	}
 }
 
