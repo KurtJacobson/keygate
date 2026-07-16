@@ -77,16 +77,40 @@ export const site = {
 // ─── Auth ───
 export const auth = {
   me: () =>
-    get<{ id: string; email: string; name: string; avatar_url: string; is_admin: boolean; role: string }>("/portal/me"),
+    get<{
+      id: string
+      email: string
+      name: string
+      avatar_url: string
+      is_admin: boolean
+      role: string
+      totp_enabled: boolean
+    }>("/portal/me"),
   providers: () => get<{ dev_login: boolean; otp: boolean }>("/auth/providers"),
   logout: () => post<void>("/auth/logout"),
   devLogin: (email: string, name: string) => post<{ status: string }>("/auth/dev-login", { email, name }),
   otpSend: (email: string) => post<{ status: string }>("/auth/otp/send", { email }),
   otpVerify: (email: string, code: string) =>
-    post<{ status: string; email: string; name: string; is_admin: boolean; role: string }>("/auth/otp/verify", {
+    post<{
+      status: string
+      email?: string
+      name?: string
+      is_admin?: boolean
+      role?: string
+      // present when status === "totp_required"
+      pending_token?: string
+    }>("/auth/otp/verify", {
       email,
       code,
     }),
+  totpVerify: (pendingToken: string, code: string) =>
+    post<{ status: string; email: string; name: string; is_admin: boolean; role: string }>("/auth/totp/verify", {
+      pending_token: pendingToken,
+      code,
+    }),
+  totpSetup: () => post<{ secret: string; otpauth_uri: string }>("/portal/2fa/totp/setup"),
+  totpActivate: (code: string) => post<{ status: string }>("/portal/2fa/totp/activate", { code }),
+  totpDisable: (code: string) => post<{ status: string }>("/portal/2fa/totp/disable", { code }),
 }
 
 // ─── Checkout ───

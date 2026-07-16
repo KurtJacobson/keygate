@@ -22,9 +22,11 @@ export default function LoginPage() {
   const [devError, setDevError] = useState("")
 
   // OTP state
-  const [otpStep, setOtpStep] = useState<"email" | "code">("email")
+  const [otpStep, setOtpStep] = useState<"email" | "code" | "totp">("email")
   const [otpEmail, setOtpEmail] = useState("")
   const [otpCode, setOtpCode] = useState("")
+  const [totpCode, setTotpCode] = useState("")
+  const [pendingToken, setPendingToken] = useState("")
   const [otpLoading, setOtpLoading] = useState(false)
   const [otpError, setOtpError] = useState("")
   const [otpCooldown, setOtpCooldown] = useState(0)
@@ -79,7 +81,27 @@ export default function LoginPage() {
     setOtpLoading(true)
     setOtpError("")
     try {
-      await auth.otpVerify(otpEmail, otpCode)
+      const r = await auth.otpVerify(otpEmail, otpCode)
+      if (r.status === "totp_required" && r.pending_token) {
+        setPendingToken(r.pending_token)
+        setOtpStep("totp")
+        setOtpError("")
+        return
+      }
+      await refetch()
+    } catch (err) {
+      setOtpError(err instanceof Error ? err.message : t("login.failed"))
+    } finally {
+      setOtpLoading(false)
+    }
+  }
+
+  const handleTotpVerify = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setOtpLoading(true)
+    setOtpError("")
+    try {
+      await auth.totpVerify(pendingToken, totpCode)
       await refetch()
     } catch (err) {
       setOtpError(err instanceof Error ? err.message : t("login.failed"))
@@ -179,6 +201,46 @@ export default function LoginPage() {
                   onClick={handleOtpResend}
                 >
                   {otpCooldown > 0 ? t("login.resendIn", { seconds: String(otpCooldown) }) : t("login.resendCode")}
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* TOTP Step (accounts with 2FA enabled) */}
+          {otpStep === "totp" && (
+            <form onSubmit={handleTotpVerify} className="space-y-3">
+              <p className="text-sm text-muted-foreground text-center">{t("login.totpPrompt")}</p>
+              <div className="space-y-2">
+                <Input
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  maxLength={6}
+                  placeholder="000000"
+                  value={totpCode}
+                  onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ""))}
+                  required
+                  autoFocus
+                  className="text-center text-2xl tracking-[0.5em] font-mono"
+                />
+              </div>
+              {otpError && <p className="text-sm text-destructive">{otpError}</p>}
+              <Button type="submit" className="w-full" disabled={otpLoading || totpCode.length !== 6}>
+                {otpLoading ? t("login.verifying") : t("login.verify")}
+              </Button>
+              <div className="flex justify-center text-xs">
+                <button
+                  type="button"
+                  className="text-muted-foreground hover:text-foreground"
+                  onClick={() => {
+                    setOtpStep("email")
+                    setOtpCode("")
+                    setTotpCode("")
+                    setPendingToken("")
+                    setOtpError("")
+                  }}
+                >
+                  {t("login.startOver")}
                 </button>
               </div>
             </form>

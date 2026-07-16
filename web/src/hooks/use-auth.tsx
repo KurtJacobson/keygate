@@ -8,6 +8,7 @@ interface AuthUser {
   avatar_url: string
   is_admin: boolean
   role: string // "owner" | "admin" | "user"
+  totp_enabled: boolean
 }
 
 interface AuthContextType {

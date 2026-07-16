@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
 import { useAuth } from "@/hooks/use-auth"
 import { useI18n } from "@/i18n"
-import { portal } from "@/lib/api"
+import { auth, portal } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
 
 export default function PortalAccountPage() {
@@ -156,6 +156,9 @@ export default function PortalAccountPage() {
         </CardContent>
       </Card>
 
+      {/* Security: TOTP two-factor auth */}
+      <TwoFactorCard />
+
       {/* License overview */}
       <Card>
         <CardHeader>
@@ -191,5 +194,156 @@ export default function PortalAccountPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+function TwoFactorCard() {
+  const { t } = useI18n()
+  const { user, refetch } = useAuth()
+  const [mode, setMode] = useState<"idle" | "setup" | "disable">("idle")
+  const [secret, setSecret] = useState("")
+  const [otpauthUri, setOtpauthUri] = useState("")
+  const [code, setCode] = useState("")
+  const [error, setError] = useState("")
+  const [busy, setBusy] = useState(false)
+
+  const reset = () => {
+    setMode("idle")
+    setSecret("")
+    setOtpauthUri("")
+    setCode("")
+    setError("")
+  }
+
+  const startSetup = async () => {
+    setBusy(true)
+    setError("")
+    try {
+      const r = await auth.totpSetup()
+      setSecret(r.secret)
+      setOtpauthUri(r.otpauth_uri)
+      setMode("setup")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const activate = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError("")
+    try {
+      await auth.totpActivate(code)
+      reset()
+      await refetch()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const disable = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setBusy(true)
+    setError("")
+    try {
+      await auth.totpDisable(code)
+      reset()
+      await refetch()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("common.error"))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const codeInput = (
+    <Input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      maxLength={6}
+      placeholder="000000"
+      value={code}
+      onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))}
+      required
+      autoFocus
+      className="text-center text-xl tracking-[0.4em] font-mono w-40"
+    />
+  )
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <CardTitle className="text-lg flex items-center gap-2">
+          <Shield className="h-4 w-4" />
+          {t("portal.twoFactor")}
+        </CardTitle>
+        {user?.totp_enabled ? (
+          <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200">
+            {t("portal.twoFactorEnabled")}
+          </Badge>
+        ) : (
+          <Badge variant="secondary">{t("portal.twoFactorDisabled")}</Badge>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm text-muted-foreground">{t("portal.twoFactorDesc")}</p>
+
+        {mode === "idle" &&
+          (user?.totp_enabled ? (
+            <Button variant="outline" size="sm" onClick={() => setMode("disable")}>
+              {t("portal.twoFactorDisableBtn")}
+            </Button>
+          ) : (
+            <Button size="sm" onClick={startSetup} disabled={busy}>
+              {t("portal.twoFactorEnableBtn")}
+            </Button>
+          ))}
+
+        {mode === "setup" && (
+          <form onSubmit={activate} className="space-y-3">
+            <p className="text-sm">{t("portal.twoFactorSetupHint")}</p>
+            <div className="bg-muted/50 rounded-lg p-3 space-y-1">
+              <p className="text-xs text-muted-foreground">{t("portal.twoFactorSecret")}</p>
+              <p className="font-mono text-sm break-all select-all">{secret}</p>
+              <a href={otpauthUri} className="text-xs text-primary hover:underline">
+                {t("portal.twoFactorOpenApp")}
+              </a>
+            </div>
+            <p className="text-sm">{t("portal.twoFactorConfirmHint")}</p>
+            {codeInput}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" disabled={busy || code.length !== 6}>
+                {t("portal.twoFactorActivateBtn")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={reset}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          </form>
+        )}
+
+        {mode === "disable" && (
+          <form onSubmit={disable} className="space-y-3">
+            <p className="text-sm">{t("portal.twoFactorDisableHint")}</p>
+            {codeInput}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" variant="destructive" disabled={busy || code.length !== 6}>
+                {t("portal.twoFactorDisableBtn")}
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={reset}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          </form>
+        )}
+      </CardContent>
+    </Card>
   )
 }
