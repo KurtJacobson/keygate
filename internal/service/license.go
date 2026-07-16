@@ -192,8 +192,12 @@ type VerifyResult struct {
 	Status     string         `json:"status"`
 	PlanID     string         `json:"plan_id"`
 	PlanName   string         `json:"plan_name"`
-	ValidUntil *time.Time     `json:"valid_until,omitempty"`
-	Features   map[string]any `json:"features"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+	// SupportUntil: end of the paid-support window (updates gating).
+	// Absent = unlimited. The license itself stays valid regardless;
+	// clients use this to surface "renew support for updates" UX.
+	SupportUntil *time.Time     `json:"support_until,omitempty"`
+	Features     map[string]any `json:"features"`
 	Token      string         `json:"token"`
 	GraceDays  int            `json:"grace_days"`
 	Meta       map[string]any `json:"meta"`
@@ -283,6 +287,7 @@ func (s *LicenseService) Verify(ctx context.Context, in VerifyInput) (*VerifyRes
 		PlanID:              lic.PlanID,
 		PlanName:            planName,
 		ValidUntil:          lic.ValidUntil,
+		SupportUntil:        lic.SupportUntil,
 		Features:            s.entitlements(lic),
 		Token:               token,
 		GraceDays:           s.graceDays(lic),
@@ -517,6 +522,9 @@ func (s *LicenseService) signToken(lic *model.License, identifier string) (strin
 		ExpiresAt:   now.Add(7 * 24 * time.Hour).Unix(),
 		GraceDays:   s.graceDays(lic),
 		Fingerprint: license.Fingerprint(identifier, lic.ProductID),
+	}
+	if lic.SupportUntil != nil {
+		t.SupportUntil = lic.SupportUntil.Unix()
 	}
 	return license.Sign(t, s.signingKey)
 }

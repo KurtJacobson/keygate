@@ -35,6 +35,9 @@ type VerifyToken struct {
 	IssuedAt    int64          `json:"iat"`
 	ExpiresAt   int64          `json:"exp"`
 	GraceDays   int            `json:"grc"`
+	// SupportUntil: unix seconds when paid support ends; 0 = unlimited.
+	// Gates updates only — the license stays usable past this date.
+	SupportUntil int64 `json:"sup,omitempty"`
 	Nonce       string         `json:"nce"`           // unique per-issuance to prevent replay
 	Fingerprint string         `json:"fpr,omitempty"` // SHA256(identifier+product_id) for binding
 }
