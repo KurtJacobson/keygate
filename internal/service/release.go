@@ -685,18 +685,29 @@ func (s *ReleaseService) GenerateDownload(ctx context.Context, in DownloadInput)
 
 	var rel *model.Release
 	if in.Version != "" {
+		// (support gating for pinned versions happens after resolution,
+		// so the customer gets a precise SUPPORT_EXPIRED rather than a
+		// generic not-found for a version they can name.)
 		// Explicit version pin: hand back the requested release as-is
 		// and let the artifact-platform check below produce a precise
 		// PLATFORM_NOT_AVAILABLE error. The user pinned the version,
 		// so silently falling back to an older version would be wrong.
 		rel, err = s.findVersionWithFallback(ctx, lic.ProductID, in.Version, in.Channel)
+		if err == nil && !releaseWithinSupport(lic, rel) {
+			return nil, apperr.New(403, "SUPPORT_EXPIRED",
+				"this release was published after the license's support window ended; renew support to receive updates")
+		}
 	} else {
 		// No pin: scope "latest" to releases the client can actually
 		// install on its platform. Without this filter, a Windows
 		// client asking for the latest would see 1.2.0 (macOS-only)
 		// and get PLATFORM_NOT_AVAILABLE even though 1.1.0 (Windows)
 		// is sitting right there.
-		rel, err = s.findLatestPublished(ctx, lic.ProductID, in.Channel, in.Platform)
+		// Perpetual fallback: "latest" means the newest release the
+		// license's support window covers, so a lapsed customer still
+		// resolves (and can reinstall) the last version they're
+		// entitled to instead of getting an error.
+		rel, err = s.findLatestPublished(ctx, lic.ProductID, in.Channel, in.Platform, lic.SupportUntil)
 	}
 	if err != nil {
 		switch {
@@ -765,8 +776,10 @@ const latestComputeWindow = 1000
 // are restricted to releases that have an uploaded artifact for that
 // platform, so the "latest" reflects what the client can actually
 // download — not the absolute newest version that happens to lack
-// their platform.
-func (s *ReleaseService) findLatestPublished(ctx context.Context, productID, channel, platform string) (*model.Release, error) {
+// their platform. When supportUntil is non-nil, candidates published
+// after it are excluded (perpetual-fallback support gating); nil
+// means unlimited support.
+func (s *ReleaseService) findLatestPublished(ctx context.Context, productID, channel, platform string, supportUntil *time.Time) (*model.Release, error) {
 	chain := channelFallbackChain(channel)
 
 	var pool []*model.Release
@@ -779,13 +792,36 @@ func (s *ReleaseService) findLatestPublished(ctx context.Context, productID, cha
 			s.logger.Warn("release: feed window saturated; semver max may be missed",
 				"product_id", productID, "channel", ch, "window", latestComputeWindow)
 		}
-		pool = append(pool, batch...)
+		for _, rel := range batch {
+			if supportUntil == nil || releaseWithinSupportTime(rel, *supportUntil) {
+				pool = append(pool, rel)
+			}
+		}
 	}
 	if len(pool) == 0 {
 		return nil, ErrReleaseNoneAvailable
 	}
 	sortBySemverDesc(pool)
 	return pool[0], nil
+}
+
+// releaseWithinSupport reports whether the license's support window
+// covers the release (perpetual fallback: everything published while
+// support was active stays downloadable forever). nil SupportUntil =
+// unlimited support; a release with no publish timestamp is treated
+// as covered rather than guessing a date.
+func releaseWithinSupport(lic *model.License, rel *model.Release) bool {
+	if lic.SupportUntil == nil {
+		return true
+	}
+	return releaseWithinSupportTime(rel, *lic.SupportUntil)
+}
+
+func releaseWithinSupportTime(rel *model.Release, supportUntil time.Time) bool {
+	if rel.PublishedAt == nil {
+		return true
+	}
+	return !rel.PublishedAt.After(supportUntil)
 }
 
 func (s *ReleaseService) findVersionWithFallback(ctx context.Context, productID, version, channel string) (*model.Release, error) {

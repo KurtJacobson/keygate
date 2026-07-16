@@ -415,3 +415,54 @@ func TestSafeKeyComponentNoPathTraversal(t *testing.T) {
 		}
 	}
 }
+
+func TestReleaseWithinSupport(t *testing.T) {
+	supportEnd := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	before := supportEnd.Add(-24 * time.Hour)
+	after := supportEnd.Add(24 * time.Hour)
+
+	cases := []struct {
+		name string
+		lic  *model.License
+		rel  *model.Release
+		want bool
+	}{
+		{
+			"unlimited support covers everything",
+			&model.License{},
+			&model.Release{PublishedAt: &after},
+			true,
+		},
+		{
+			"release published before support end",
+			&model.License{SupportUntil: &supportEnd},
+			&model.Release{PublishedAt: &before},
+			true,
+		},
+		{
+			"release published exactly at support end",
+			&model.License{SupportUntil: &supportEnd},
+			&model.Release{PublishedAt: &supportEnd},
+			true,
+		},
+		{
+			"release published after support end",
+			&model.License{SupportUntil: &supportEnd},
+			&model.Release{PublishedAt: &after},
+			false,
+		},
+		{
+			"release without publish timestamp is covered",
+			&model.License{SupportUntil: &supportEnd},
+			&model.Release{},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := releaseWithinSupport(c.lic, c.rel); got != c.want {
+				t.Fatalf("releaseWithinSupport: got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
