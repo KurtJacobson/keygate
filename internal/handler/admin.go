@@ -846,6 +846,10 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		Notes               string `json:"notes"`
 		ExternalCustomerID  string `json:"external_customer_id"`
 		ExternalWorkspaceID string `json:"external_workspace_id"`
+		// ValidUntil sets an explicit expiry (RFC 3339). Empty means the
+		// plan decides: trial plans get now+trial_days, everything else
+		// is perpetual. When set it wins over the trial default.
+		ValidUntil string `json:"valid_until"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, plan_id, and email are required")
@@ -866,6 +870,20 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	if len(req.ExternalWorkspaceID) > 256 {
 		response.BadRequest(c, "external_workspace_id must be ≤ 256 chars")
 		return
+	}
+
+	var validUntil *time.Time
+	if req.ValidUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.ValidUntil)
+		if err != nil {
+			response.BadRequest(c, "valid_until must be an RFC 3339 timestamp")
+			return
+		}
+		if !ts.After(time.Now()) {
+			response.BadRequest(c, "valid_until must be in the future")
+			return
+		}
+		validUntil = &ts
 	}
 
 	// Look up plan first to determine license type and set appropriate fields
@@ -906,8 +924,11 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		ExternalWorkspaceID: req.ExternalWorkspaceID,
 	}
 
-	// Set valid_until for trial licenses
-	if plan.LicenseType == "trial" && plan.TrialDays > 0 {
+	// Set valid_until: an explicit request value wins, otherwise trial
+	// plans default to now+trial_days and other plans stay perpetual.
+	if validUntil != nil {
+		l.ValidUntil = validUntil
+	} else if plan.LicenseType == "trial" && plan.TrialDays > 0 {
 		until := time.Now().Add(time.Duration(plan.TrialDays) * 24 * time.Hour)
 		l.ValidUntil = &until
 	}
