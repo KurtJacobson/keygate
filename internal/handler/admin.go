@@ -1088,6 +1088,54 @@ func (h *AdminHandler) ReinstateLicense(c *gin.Context) {
 	response.OK(c, gin.H{"status": "active"})
 }
 
+// SetLicenseValidUntil sets or clears a license's expiry date. An
+// empty valid_until makes the license perpetual. Extending an
+// already-expired license does not change its status — use
+// /reinstate for that (the two concerns stay separate so an
+// accidental date edit can't silently re-arm a revoked customer).
+func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	var req struct {
+		ValidUntil string `json:"valid_until"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+
+	lic, err := h.Store.FindLicenseByID(c, id)
+	if err != nil {
+		response.NotFound(c, "license not found")
+		return
+	}
+
+	var validUntil *time.Time
+	if req.ValidUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.ValidUntil)
+		if err != nil {
+			response.BadRequest(c, "valid_until must be an RFC 3339 timestamp or empty")
+			return
+		}
+		validUntil = &ts
+	}
+
+	lic.ValidUntil = validUntil
+	if err := h.Store.UpdateLicense(c, lic, "valid_until"); err != nil {
+		response.Internal(c)
+		return
+	}
+
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "license", EntityID: id, Action: "valid_until_changed",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{"valid_until": req.ValidUntil},
+	})
+	response.OK(c, lic)
+}
+
 func (h *AdminHandler) DeleteActivation(c *gin.Context) {
 	id := c.Param("id")
 	pid, err := h.Store.GetActivationProductID(c, id)
