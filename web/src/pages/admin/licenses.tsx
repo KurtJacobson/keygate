@@ -279,6 +279,7 @@ function CreateLicenseDialog({
     external_customer_id?: string
     external_workspace_id?: string
     valid_until?: string
+    support_until?: string
   }) => void
   loading: boolean
 }) {
@@ -290,6 +291,7 @@ function CreateLicenseDialog({
   const [externalCustomerID, setExternalCustomerID] = useState("")
   const [externalWorkspaceID, setExternalWorkspaceID] = useState("")
   const [validUntil, setValidUntil] = useState("")
+  const [supportUntil, setSupportUntil] = useState("")
 
   const { data: plansData } = useQuery({
     queryKey: ["admin", "plans", productId],
@@ -331,6 +333,7 @@ function CreateLicenseDialog({
               external_customer_id: externalCustomerID.trim() || undefined,
               external_workspace_id: externalWorkspaceID.trim() || undefined,
               valid_until: validUntil ? endOfDayISO(validUntil) : undefined,
+              support_until: supportUntil ? endOfDayISO(supportUntil) : undefined,
             })
           }}
           className="space-y-4"
@@ -391,6 +394,16 @@ function CreateLicenseDialog({
             />
             <p className="text-xs text-muted-foreground">{t("licenses.validUntilHint")}</p>
           </div>
+          <div className="space-y-2">
+            <Label>{t("licenses.supportUntilOptional")}</Label>
+            <Input
+              type="date"
+              value={supportUntil}
+              min={new Date().toISOString().slice(0, 10)}
+              onChange={(e) => setSupportUntil(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">{t("licenses.supportUntilHint")}</p>
+          </div>
           {/* External identifiers — opaque strings the merchant uses
               to map their own user/workspace model to this license.
               Both optional; leave blank if not integrating with an
@@ -437,6 +450,8 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const [changingPlan, setChangingPlan] = useState(false)
   // null = not editing; "" = editing with empty value (perpetual)
   const [editingValidUntil, setEditingValidUntil] = useState<string | null>(null)
+  // same convention; "" = unlimited support
+  const [editingSupportUntil, setEditingSupportUntil] = useState<string | null>(null)
 
   const revokeMut = useMutation({
     mutationFn: () => admin.revokeLicense(id),
@@ -467,6 +482,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin"] })
       setEditingValidUntil(null)
+    },
+  })
+  const supportUntilMut = useMutation({
+    mutationFn: (supportUntil: string) => admin.setLicenseSupportUntil(id, supportUntil),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin"] })
+      setEditingSupportUntil(null)
     },
   })
   // Activation deletion is destructive — wrap in a confirmation
@@ -583,6 +605,53 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           </Button>
                         </div>
                         <p className="text-xs text-muted-foreground">{t("licenses.validUntilClear")}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">{t("licenses.supportUntil")}</p>
+                    {editingSupportUntil === null ? (
+                      <div className="flex items-center gap-1 mt-1">
+                        <p>{lic.support_until ? formatDate(lic.support_until) : t("licenses.supportUnlimited")}</p>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          title={t("licenses.supportUntilEdit")}
+                          onClick={() => setEditingSupportUntil(lic.support_until ? localDateValue(lic.support_until) : "")}
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="mt-1 space-y-1">
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="date"
+                            className="h-7 w-40 text-xs"
+                            value={editingSupportUntil}
+                            onChange={(e) => setEditingSupportUntil(e.target.value)}
+                          />
+                          <Button
+                            size="sm"
+                            className="h-7"
+                            disabled={supportUntilMut.isPending}
+                            onClick={() =>
+                              supportUntilMut.mutate(editingSupportUntil ? endOfDayISO(editingSupportUntil) : "")
+                            }
+                          >
+                            {t("common.save")}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7"
+                            onClick={() => setEditingSupportUntil(null)}
+                          >
+                            {t("common.cancel")}
+                          </Button>
+                        </div>
+                        <p className="text-xs text-muted-foreground">{t("licenses.supportUntilClear")}</p>
                       </div>
                     )}
                   </div>
