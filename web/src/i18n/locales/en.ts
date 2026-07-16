@@ -125,6 +125,7 @@ const en = {
   "licenses.issue": "Issue License",
   "licenses.licenseKey": "License Key",
   "licenses.validUntil": "Valid Until",
+  "licenses.perpetual": "Perpetual",
   "licenses.validUntilOptional": "Valid until (optional)",
   "licenses.validUntilHint": "Leave empty for a perpetual license (trials still use the plan's trial days).",
   "licenses.validUntilEdit": "Edit expiry",

@@ -216,7 +216,7 @@ export default function LicensesPage() {
                         <Badge className={statusColor(lic.status)}>{t(`status.${lic.status}` as any)}</Badge>
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
-                        {formatDate(lic.valid_until)}
+                        {lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}
                       </DataTableCell>
                       <DataTableCell className="text-muted-foreground text-xs">
                         {formatDate(lic.created_at)}
@@ -539,7 +539,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                     <p className="text-muted-foreground">{t("licenses.validUntil")}</p>
                     {editingValidUntil === null ? (
                       <div className="flex items-center gap-1 mt-1">
-                        <p>{formatDate(lic.valid_until)}</p>
+                        <p>{lic.valid_until ? formatDate(lic.valid_until) : t("licenses.perpetual")}</p>
                         {/* Stripe owns the expiry for subscription licenses —
                             editing it here would be overwritten on renewal. */}
                         {lic.payment_provider !== "stripe" && (

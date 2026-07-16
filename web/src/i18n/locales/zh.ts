@@ -123,6 +123,7 @@ const zh = {
   "licenses.issue": "签发许可证",
   "licenses.licenseKey": "许可证密钥",
   "licenses.validUntil": "有效期至",
+  "licenses.perpetual": "永久",
   "licenses.validUntilOptional": "有效期至（可选）",
   "licenses.validUntilHint": "留空表示永久许可证（试用版仍按套餐的试用天数计算）。",
   "licenses.validUntilEdit": "编辑到期时间",
