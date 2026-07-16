@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -348,9 +349,31 @@ func main() {
 		c.Next()
 	})
 
+	// CORS: only ever reflect an allowed origin. Allowed means the
+	// configured BaseURL (same-site deployments need no CORS at all, but
+	// a separately-hosted frontend on BaseURL does), plus localhost /
+	// 127.0.0.1 origins outside production for local frontend dev.
+	// Reflecting arbitrary origins with Allow-Credentials would hand any
+	// website authenticated API access on non-production deployments
+	// (staging included), so unknown origins get no CORS headers and
+	// their preflights are refused.
+	corsAllowed := func(origin string) bool {
+		if origin == strings.TrimSuffix(cfg.BaseURL, "/") {
+			return true
+		}
+		if cfg.IsProduction() {
+			return false
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		host := u.Hostname()
+		return host == "localhost" || host == "127.0.0.1"
+	}
 	r.Use(func(c *gin.Context) {
 		if origin := c.GetHeader("Origin"); origin != "" {
-			if cfg.IsProduction() && origin != cfg.BaseURL {
+			if !corsAllowed(origin) {
 				if c.Request.Method == "OPTIONS" {
 					c.AbortWithStatus(http.StatusForbidden)
 					return
@@ -362,6 +385,7 @@ func main() {
 			c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 			c.Header("Access-Control-Allow-Headers", "Authorization,Content-Type")
 			c.Header("Access-Control-Allow-Credentials", "true")
+			c.Header("Vary", "Origin")
 			if c.Request.Method == "OPTIONS" {
 				c.AbortWithStatus(http.StatusNoContent)
 				return
