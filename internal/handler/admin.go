@@ -236,6 +236,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats        int    `json:"max_seats"`
 		TrialDays       int    `json:"trial_days"`
 		GraceDays       int    `json:"grace_days"`
+		SupportDays     int    `json:"support_days"`
 		StripePriceID   string `json:"stripe_price_id"`
 		LicenseModel    string `json:"license_model"`
 		FloatingTimeout int    `json:"floating_timeout"`
@@ -267,6 +268,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
 		GraceDays:       req.GraceDays,
+		SupportDays:     req.SupportDays,
 		FloatingTimeout: req.FloatingTimeout,
 	}); err != nil {
 		response.BadRequest(c, err.Error())
@@ -332,6 +334,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
 		GraceDays:       req.GraceDays,
+		SupportDays:     req.SupportDays,
 		StripePriceID:   req.StripePriceID,
 		LicenseModel:    licenseModel,
 		FloatingTimeout: floatingTimeout,
@@ -368,6 +371,7 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		MaxSeats        *int    `json:"max_seats"`
 		TrialDays       *int    `json:"trial_days"`
 		GraceDays       *int    `json:"grace_days"`
+		SupportDays     *int    `json:"support_days"`
 		StripePriceID   *string `json:"stripe_price_id"`
 		LicenseModel    *string `json:"license_model"`
 		FloatingTimeout *int    `json:"floating_timeout"`
@@ -427,6 +431,7 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	check := planBounds{
 		MaxActivations: p.MaxActivations, MaxSeats: p.MaxSeats,
 		TrialDays: p.TrialDays, GraceDays: p.GraceDays,
+		SupportDays:     p.SupportDays,
 		FloatingTimeout: p.FloatingTimeout,
 	}
 	if req.MaxActivations != nil {
@@ -440,6 +445,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	}
 	if req.GraceDays != nil {
 		check.GraceDays = *req.GraceDays
+	}
+	if req.SupportDays != nil {
+		check.SupportDays = *req.SupportDays
 	}
 	if req.FloatingTimeout != nil {
 		check.FloatingTimeout = *req.FloatingTimeout
@@ -469,6 +477,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	}
 	if req.TrialDays != nil {
 		p.TrialDays = *req.TrialDays
+	}
+	if req.SupportDays != nil {
+		p.SupportDays = *req.SupportDays
 	}
 	if req.GraceDays != nil {
 		p.GraceDays = *req.GraceDays
@@ -703,6 +714,7 @@ type planBounds struct {
 	MaxSeats        int
 	TrialDays       int
 	GraceDays       int
+	SupportDays     int
 	FloatingTimeout int // minutes
 }
 
@@ -724,6 +736,10 @@ func validatePlanNumericBounds(b planBounds) error {
 		return fmt.Errorf("grace_days cannot be negative")
 	case b.GraceDays > 365:
 		return fmt.Errorf("grace_days cannot exceed 365")
+	case b.SupportDays < 0:
+		return fmt.Errorf("support_days cannot be negative")
+	case b.SupportDays > 3650:
+		return fmt.Errorf("support_days cannot exceed 3650 (10 years)")
 	case b.FloatingTimeout < 0:
 		return fmt.Errorf("floating_timeout cannot be negative")
 	case b.FloatingTimeout > 1440:
