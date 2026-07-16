@@ -230,6 +230,54 @@ func (s *Store) UpdateUserProfile(ctx context.Context, userID, name string) erro
 	return err
 }
 
+// ─── TOTP two-factor auth ───
+
+// SetPendingTOTPSecret stores a freshly generated secret with enabled=false.
+// Overwriting an unconfirmed secret is fine (user restarted setup); an
+// already-enabled secret must be disabled first, enforced by the WHERE.
+func (s *Store) SetPendingTOTPSecret(ctx context.Context, userID, secret string) error {
+	res, err := s.DB.NewUpdate().Model((*model.User)(nil)).
+		Set("totp_secret = ?, totp_enabled = FALSE, totp_last_slot = 0, updated_at = now()", secret).
+		Where("id = ? AND totp_enabled = FALSE", userID).Exec(ctx)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("totp already enabled")
+	}
+	return nil
+}
+
+// EnableTOTP flips a pending secret to active.
+func (s *Store) EnableTOTP(ctx context.Context, userID string) error {
+	_, err := s.DB.NewUpdate().Model((*model.User)(nil)).
+		Set("totp_enabled = TRUE, updated_at = now()").
+		Where("id = ? AND totp_secret IS NOT NULL AND totp_secret != ''", userID).Exec(ctx)
+	return err
+}
+
+// DisableTOTP removes the secret entirely (both active and pending states).
+func (s *Store) DisableTOTP(ctx context.Context, userID string) error {
+	_, err := s.DB.NewUpdate().Model((*model.User)(nil)).
+		Set("totp_secret = NULL, totp_enabled = FALSE, totp_last_slot = 0, updated_at = now()").
+		Where("id = ?", userID).Exec(ctx)
+	return err
+}
+
+// ClaimTOTPSlot records that a code from the given time-slot was accepted.
+// The WHERE makes it atomic: if two requests race with the same code, only
+// one advances the slot and the other reports false (replay).
+func (s *Store) ClaimTOTPSlot(ctx context.Context, userID string, slot int64) (bool, error) {
+	res, err := s.DB.NewUpdate().Model((*model.User)(nil)).
+		Set("totp_last_slot = ?, updated_at = now()", slot).
+		Where("id = ? AND totp_last_slot < ?", userID, slot).Exec(ctx)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (s *Store) UpsertOAuth(ctx context.Context, a *model.OAuthAccount) error {
 	if a.ID == "" {
 		a.ID = newID()

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tabloy/keygate/internal/middleware"
 	"github.com/tabloy/keygate/internal/model"
 	"github.com/tabloy/keygate/pkg/response"
 )
@@ -130,6 +131,20 @@ func (h *AuthHandler) OTPVerify(c *gin.Context) {
 	// Welcome email for new users
 	if h.Email != nil && time.Since(user.CreatedAt) < time.Minute {
 		h.Email.SendWelcome(user.Email, user.Name)
+	}
+
+	// Accounts with TOTP enabled owe a second factor: hand back a
+	// short-lived pending token instead of a session. The email OTP is
+	// already consumed (MarkOTPUsed above), so abandoning this step
+	// leaves nothing reusable behind.
+	if user.TOTPEnabled {
+		pending, err := middleware.IssuePending2FAJWT(h.Config.JWTSecret, user.ID, pending2FATTL)
+		if err != nil {
+			response.Internal(c)
+			return
+		}
+		response.OK(c, gin.H{"status": "totp_required", "pending_token": pending})
+		return
 	}
 
 	h.issueSession(c, user)

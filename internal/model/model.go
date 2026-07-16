@@ -17,7 +17,13 @@ type User struct {
 	Name      string    `json:"name"`
 	AvatarURL string    `json:"avatar_url,omitempty"`
 	Role      string    `bun:",notnull,default:'user'" json:"role"` // owner | admin | user
-	CreatedAt time.Time `bun:",nullzero,default:now()" json:"created_at"`
+	// TOTP two-factor auth. Secret is never serialized to JSON; enabled
+	// is exposed so the portal can show enrollment state. LastSlot holds
+	// the most recent accepted 30s time-slot for replay rejection.
+	TOTPSecret   string    `bun:"totp_secret" json:"-"`
+	TOTPEnabled  bool      `bun:"totp_enabled,notnull,default:false" json:"totp_enabled"`
+	TOTPLastSlot int64     `bun:"totp_last_slot,notnull,default:0" json:"-"`
+	CreatedAt    time.Time `bun:",nullzero,default:now()" json:"created_at"`
 	UpdatedAt time.Time `bun:",nullzero,default:now()" json:"updated_at"`
 }
 

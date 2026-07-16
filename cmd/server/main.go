@@ -535,6 +535,7 @@ func main() {
 		auth.GET("/providers", authH.Providers)
 		auth.POST("/otp/send", authH.OTPSend)
 		auth.POST("/otp/verify", authH.OTPVerify)
+		auth.POST("/totp/verify", authH.TOTPLogin)
 		auth.POST("/dev-login", authH.DevLogin)
 		auth.POST("/logout", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin), authH.Logout)
 		auth.POST("/refresh", authH.Refresh)
@@ -555,6 +556,11 @@ func main() {
 	portal := v1.Group("/portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin))
 	{
 		portal.GET("/me", authH.Me)
+		// TOTP two-factor enrollment. Any user may enroll; enforcement
+		// happens at login for accounts that have it enabled.
+		portal.POST("/2fa/totp/setup", authH.TOTPSetup)
+		portal.POST("/2fa/totp/activate", authH.TOTPActivate)
+		portal.POST("/2fa/totp/disable", authH.TOTPDisable)
 		portal.GET("/licenses", func(c *gin.Context) {
 			emailVal, _ := c.Get("email")
 			emailStr, ok := emailVal.(string)

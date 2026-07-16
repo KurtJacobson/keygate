@@ -54,6 +54,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	response.OK(c, gin.H{
 		"id": user.ID, "email": user.Email, "name": user.Name,
 		"avatar_url": user.AvatarURL, "is_admin": user.IsAdmin(), "role": user.Role,
+		"totp_enabled": user.TOTPEnabled,
 	})
 }
 

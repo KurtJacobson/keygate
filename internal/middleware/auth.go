@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -19,6 +20,10 @@ type Claims struct {
 	Email   string `json:"email"`
 	Name    string `json:"name"`
 	IsAdmin bool   `json:"adm,omitempty"`
+	// Pending2FA marks a half-finished login: email OTP passed but the
+	// TOTP code hasn't been presented yet. Such tokens are ONLY accepted
+	// by the /auth/totp/verify handler; SessionAuth rejects them.
+	Pending2FA bool `json:"p2fa,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -34,6 +39,32 @@ func IssueJWT(secret, userID, email, name string, isAdmin bool, ttl time.Duratio
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+}
+
+// IssuePending2FAJWT mints the short-lived token handed back after a
+// successful email-OTP verify when the account still owes a TOTP code.
+func IssuePending2FAJWT(secret, userID string, ttl time.Duration) (string, error) {
+	claims := Claims{
+		UserID:     userID,
+		Pending2FA: true,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+}
+
+// ParsePending2FAJWT validates a pending-2FA token and returns the user ID.
+func ParsePending2FAJWT(secret, raw string) (string, error) {
+	claims := &Claims{}
+	tok, err := jwt.ParseWithClaims(raw, claims, func(*jwt.Token) (any, error) {
+		return []byte(secret), nil
+	}, jwt.WithValidMethods([]string{"HS256"}))
+	if err != nil || !tok.Valid || !claims.Pending2FA || claims.UserID == "" {
+		return "", fmt.Errorf("invalid pending 2fa token")
+	}
+	return claims.UserID, nil
 }
 
 // AdminChecker checks if a user has admin privileges by user ID.
@@ -67,6 +98,10 @@ func SessionAuth(secret string, adminCheck ...AdminChecker) gin.HandlerFunc {
 		})
 		if err != nil || !tok.Valid {
 			abortWithError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired token")
+			return
+		}
+		if claims.Pending2FA {
+			abortWithError(c, http.StatusUnauthorized, "UNAUTHORIZED", "two-factor verification required")
 			return
 		}
 
