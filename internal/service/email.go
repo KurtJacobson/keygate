@@ -72,6 +72,8 @@ func DefaultTemplates() map[string]string {
 		"license_expired":   tmplLicenseExpired,
 		"trial_expired":     tmplTrialExpired,
 		"license_suspended": tmplLicenseSuspended,
+		"support_expiring":  tmplSupportExpiring,
+		"support_ended":     tmplSupportEnded,
 		"quota_warning":     tmplQuotaWarning,
 		"seat_invite":       tmplSeatInvite,
 		"admin_invite":      tmplAdminInvite,
@@ -356,6 +358,38 @@ func (s *EmailService) SendLicenseExpiring(to, productName, licenseKey, expiresA
 	go func() {
 		if err := s.Send(to, productName+" license expiring soon", body); err != nil {
 			s.logger.Error("email delivery failed", "to", to, "subject", productName+" license expiring soon", "error", err)
+		}
+	}()
+}
+
+// SendSupportExpiring warns that the paid support/updates window is
+// ending. Deliberately softer wording than license expiry — the
+// software keeps working, only updates stop.
+func (s *EmailService) SendSupportExpiring(to, productName, licenseKey, endsAt string) {
+	body := renderTemplate(s.getTemplate("support_expiring", tmplSupportExpiring), map[string]string{
+		"Product":    productName,
+		"LicenseKey": licenseKey,
+		"EndsAt":     endsAt,
+	})
+	subject := productName + " support & updates ending " + endsAt
+	go func() {
+		if err := s.Send(to, subject, body); err != nil {
+			s.logger.Error("email delivery failed", "to", to, "subject", subject, "error", err)
+		}
+	}()
+}
+
+// SendSupportEnded confirms the support window has lapsed and how to
+// renew. The license itself remains valid (perpetual fallback).
+func (s *EmailService) SendSupportEnded(to, productName, licenseKey string) {
+	body := renderTemplate(s.getTemplate("support_ended", tmplSupportEnded), map[string]string{
+		"Product":    productName,
+		"LicenseKey": licenseKey,
+	})
+	subject := productName + " support & updates have ended"
+	go func() {
+		if err := s.Send(to, subject, body); err != nil {
+			s.logger.Error("email delivery failed", "to", to, "subject", subject, "error", err)
 		}
 	}()
 }
@@ -687,6 +721,22 @@ const tmplLicenseExpiring = `<!DOCTYPE html>
 <p>Your <strong>{{.Product}}</strong> license expires on <strong>{{.ExpiresAt}}</strong>.</p>
 <p>License key: <code>{{.LicenseKey}}</code></p>
 <p>Please renew to avoid service interruption.</p>
+</body></html>`
+
+const tmplSupportExpiring = `<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #111;">Support &amp; Updates Ending Soon</h2>
+<p>The support and updates window for your <strong>{{.Product}}</strong> license ends on <strong>{{.EndsAt}}</strong>.</p>
+<p>License key: <code>{{.LicenseKey}}</code></p>
+<p>Your license keeps working after this date, and you keep every version released while support was active. Renewing extends your access to new releases and support.</p>
+</body></html>`
+
+const tmplSupportEnded = `<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #111;">Support &amp; Updates Have Ended</h2>
+<p>The support and updates window for your <strong>{{.Product}}</strong> license has ended.</p>
+<p>License key: <code>{{.LicenseKey}}</code></p>
+<p>Your license remains valid and you can keep using — and reinstalling — every version released during your support window. Renew support any time to receive new releases again.</p>
 </body></html>`
 
 const tmplQuotaWarning = `<!DOCTYPE html>

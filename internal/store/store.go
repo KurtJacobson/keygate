@@ -751,6 +751,23 @@ func (s *Store) FindExpiringLicenses(ctx context.Context, from, to time.Time) ([
 	return out, err
 }
 
+// FindSupportExpiringLicenses returns licenses whose paid-support
+// window ends inside [from, to]. Mirrors FindExpiringLicenses but on
+// support_until; used by the support-renewal reminder emails.
+func (s *Store) FindSupportExpiringLicenses(ctx context.Context, from, to time.Time) ([]*model.License, error) {
+	var out []*model.License
+	err := s.DB.NewSelect().Model(&out).
+		Relation("Product").
+		Relation("Plan").
+		Where("license.status IN ('active', 'trialing')").
+		Where("license.support_until IS NOT NULL").
+		Where("license.support_until >= ?", from).
+		Where("license.support_until <= ?", to).
+		OrderExpr("license.support_until ASC").
+		Scan(ctx)
+	return out, err
+}
+
 // ─── Audit ───
 
 func (s *Store) Audit(ctx context.Context, log *model.AuditLog) {
