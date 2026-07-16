@@ -36,6 +36,24 @@ import { useI18n } from "@/i18n"
 import { admin } from "@/lib/api"
 import { formatDate, statusColor } from "@/lib/utils"
 
+// A date picked in the expiry field means "valid through that whole
+// day" in the admin's local timezone, so the license dies at local
+// 23:59:59 rather than end-of-day UTC (which renders as an odd
+// mid-evening time for anyone west of Greenwich).
+function endOfDayISO(date: string): string {
+  const [y, m, d] = date.split("-").map(Number)
+  return new Date(y, m - 1, d, 23, 59, 59).toISOString()
+}
+
+// Inverse of endOfDayISO for prefilling the date input: the stored
+// instant rendered as a local YYYY-MM-DD (slicing the UTC string
+// would land on the next day for anyone west of Greenwich).
+function localDateValue(iso: string): string {
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 export default function LicensesPage() {
   const { t } = useI18n()
   const qc = useQueryClient()
@@ -312,9 +330,7 @@ function CreateLicenseDialog({
               notes,
               external_customer_id: externalCustomerID.trim() || undefined,
               external_workspace_id: externalWorkspaceID.trim() || undefined,
-              // Date-only input → expire at end of that day, UTC. Good
-              // enough for invoice-style licensing without a time picker.
-              valid_until: validUntil ? `${validUntil}T23:59:59Z` : undefined,
+              valid_until: validUntil ? endOfDayISO(validUntil) : undefined,
             })
           }}
           className="space-y-4"
@@ -532,7 +548,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             size="icon"
                             className="h-6 w-6"
                             title={t("licenses.validUntilEdit")}
-                            onClick={() => setEditingValidUntil(lic.valid_until ? lic.valid_until.slice(0, 10) : "")}
+                            onClick={() => setEditingValidUntil(lic.valid_until ? localDateValue(lic.valid_until) : "")}
                           >
                             <Pencil className="h-3 w-3" />
                           </Button>
@@ -552,7 +568,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                             className="h-7"
                             disabled={validUntilMut.isPending}
                             onClick={() =>
-                              validUntilMut.mutate(editingValidUntil ? `${editingValidUntil}T23:59:59Z` : "")
+                              validUntilMut.mutate(editingValidUntil ? endOfDayISO(editingValidUntil) : "")
                             }
                           >
                             {t("common.save")}
