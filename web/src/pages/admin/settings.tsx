@@ -226,6 +226,21 @@ export default function SettingsPage() {
                   </div>
                   <p className="text-xs text-muted-foreground">{t("settings.logoUrlDesc")}</p>
                 </div>
+                <div className="space-y-2 col-span-2">
+                  <Label>{t("settings.faviconUrl")}</Label>
+                  <div className="flex items-center gap-3">
+                    {form.favicon_url && (
+                      <img src={form.favicon_url} alt="Custom favicon" className="h-6 w-6 rounded border" />
+                    )}
+                    <Input
+                      value={form.favicon_url || ""}
+                      onChange={(e) => set("favicon_url", e.target.value)}
+                      placeholder="https://example.com/favicon.svg"
+                      className="flex-1"
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">{t("settings.faviconUrlDesc")}</p>
+                </div>
               </div>
             </CardContent>
           </Card>
