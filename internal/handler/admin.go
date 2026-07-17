@@ -1813,6 +1813,7 @@ func (h *AdminHandler) UpdateSettings(c *gin.Context) {
 	// Validate allowed keys
 	allowed := map[string]bool{
 		"site_name": true, "timezone": true, "language": true, "brand_color": true, "logo_url": true,
+		"favicon_url": true,
 		"smtp_host": true, "smtp_port": true, "smtp_username": true,
 		"smtp_password": true, "smtp_from": true,
 		"rate_limit_api": true, "rate_limit_admin": true,

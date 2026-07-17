@@ -36,7 +36,7 @@ func (s *Store) GetSettings(ctx context.Context) (map[string]string, error) {
 
 // GetPublicSettings returns settings safe for unauthenticated access (site branding).
 func (s *Store) GetPublicSettings(ctx context.Context) (map[string]string, error) {
-	publicKeys := []string{"site_name", "timezone", "brand_color", "language", "logo_url"}
+	publicKeys := []string{"site_name", "timezone", "brand_color", "language", "logo_url", "favicon_url"}
 	var settings []Setting
 	err := s.DB.NewSelect().Model(&settings).
 		Where("key IN (?)", bun.In(publicKeys)).Scan(ctx)
