@@ -49,8 +49,12 @@ export function SiteConfigProvider({ children }: { children: ReactNode }) {
         // to the logo so a single-image setup still brands the tab.
         const favicon = data.favicon_url || data.logo_url
         if (favicon) {
-          const link = document.querySelector("link[rel='icon']") as HTMLLinkElement
-          if (link) link.href = favicon
+          // index.html declares multiple <link rel="icon"> variants and
+          // browsers pick their favorite (often the sizes="32x32" one),
+          // so rewriting only the first never took effect — update all.
+          document.querySelectorAll<HTMLLinkElement>("link[rel~='icon']").forEach((link) => {
+            link.href = favicon
+          })
         }
         if (data.brand_color) {
           const root = document.documentElement.style
