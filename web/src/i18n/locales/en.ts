@@ -344,6 +344,8 @@ const en = {
   "settings.brandColorDesc": "Primary color used throughout the interface. Leave empty for default.",
   "settings.logoUrl": "Custom Logo URL",
   "settings.logoUrlDesc": "URL to your logo (SVG recommended). Leave empty for default Keygate logo.",
+  "settings.faviconUrl": "Favicon URL",
+  "settings.faviconUrlDesc": "URL to the browser-tab icon. Leave empty to use the logo above.",
   "settings.smtpHost": "SMTP Host",
   "settings.smtpPort": "SMTP Port",
   "settings.smtpUsername": "SMTP Username",

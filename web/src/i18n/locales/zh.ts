@@ -335,6 +335,8 @@ const zh = {
   "settings.brandColorDesc": "整个界面使用的主色调。留空则使用默认紫色。",
   "settings.logoUrl": "自定义 Logo URL",
   "settings.logoUrlDesc": "Logo 图片的 URL（推荐 SVG 格式）。留空则使用默认 Keygate Logo。",
+  "settings.faviconUrl": "网站图标 URL",
+  "settings.faviconUrlDesc": "浏览器标签页图标的 URL。留空则使用上方的 Logo。",
   "settings.smtpHost": "SMTP 服务器",
   "settings.smtpPort": "SMTP 端口",
   "settings.smtpUsername": "SMTP 用户名",
