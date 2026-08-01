@@ -595,12 +595,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           >
                             {t("common.save")}
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-7"
-                            onClick={() => setEditingValidUntil(null)}
-                          >
+                          <Button size="sm" variant="ghost" className="h-7" onClick={() => setEditingValidUntil(null)}>
                             {t("common.cancel")}
                           </Button>
                         </div>
@@ -618,7 +613,9 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                           size="icon"
                           className="h-6 w-6"
                           title={t("licenses.supportUntilEdit")}
-                          onClick={() => setEditingSupportUntil(lic.support_until ? localDateValue(lic.support_until) : "")}
+                          onClick={() =>
+                            setEditingSupportUntil(lic.support_until ? localDateValue(lic.support_until) : "")
+                          }
                         >
                           <Pencil className="h-3 w-3" />
                         </Button>

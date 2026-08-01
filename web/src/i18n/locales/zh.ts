@@ -133,7 +133,8 @@ const zh = {
   "licenses.supportUntil": "支持期至",
   "licenses.supportUnlimited": "无限期",
   "licenses.supportUntilOptional": "支持期至（可选）",
-  "licenses.supportUntilHint": "付费支持/更新窗口的截止日期。留空则使用套餐的支持天数（或无限期）。许可证本身不会因此过期。",
+  "licenses.supportUntilHint":
+    "付费支持/更新窗口的截止日期。留空则使用套餐的支持天数（或无限期）。许可证本身不会因此过期。",
   "licenses.supportUntilEdit": "编辑支持窗口",
   "licenses.supportUntilClear": "留空表示无限期支持/更新。",
   "licenses.empty": "未找到许可证",
