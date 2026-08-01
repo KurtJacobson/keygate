@@ -502,6 +502,8 @@ const zh = {
   "plans.monthly": "按月",
   "plans.yearly": "按年",
   "plans.stripePriceId": "Stripe 价格 ID",
+  "plans.supportRenewalPriceId": "支持续费价格 ID",
+  "plans.supportRenewalPriceIdHint": "用于一次性支持期续费的 Stripe 价格。留空则不提供自助续费。",
   "plans.valueType": "值类型",
   "plans.value": "值",
   "plans.quotaPeriod": "配额周期",

@@ -511,6 +511,7 @@ export interface Plan {
   grace_days: number
   support_days: number
   stripe_price_id?: string
+  support_renewal_price_id?: string
   active: boolean
   sort_order: number
   created_at: string

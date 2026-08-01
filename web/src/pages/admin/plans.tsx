@@ -318,6 +318,7 @@ function PlanDialog({
     floating_timeout: plan?.floating_timeout ?? 30,
     active: plan?.active ?? true,
     stripe_price_id: plan?.stripe_price_id || "",
+    support_renewal_price_id: plan?.support_renewal_price_id || "",
   })
 
   const set = (key: string, val: string | number | boolean) => setForm((f) => ({ ...f, [key]: val }))
@@ -523,6 +524,15 @@ function PlanDialog({
                 onChange={(e) => set("stripe_price_id", e.target.value)}
                 placeholder="price_..."
               />
+            </div>
+            <div className="space-y-2">
+              <Label>{t("plans.supportRenewalPriceId")}</Label>
+              <Input
+                value={form.support_renewal_price_id}
+                onChange={(e) => set("support_renewal_price_id", e.target.value)}
+                placeholder="price_..."
+              />
+              <p className="text-xs text-muted-foreground">{t("plans.supportRenewalPriceIdHint")}</p>
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">

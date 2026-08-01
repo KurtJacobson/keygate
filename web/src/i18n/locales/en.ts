@@ -513,6 +513,8 @@ const en = {
   "plans.monthly": "Monthly",
   "plans.yearly": "Yearly",
   "plans.stripePriceId": "Stripe Price ID",
+  "plans.supportRenewalPriceId": "Support Renewal Price ID",
+  "plans.supportRenewalPriceIdHint": "Stripe price for a one-time support-window renewal. Leave empty to not offer self-serve renewal.",
   "plans.valueType": "Value Type",
   "plans.value": "Value",
   "plans.quotaPeriod": "Quota Period",
