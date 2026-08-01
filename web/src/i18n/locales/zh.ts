@@ -55,7 +55,6 @@ const zh = {
   "nav.insights": "数据洞察",
   "nav.customers": "客户管理",
   "nav.settings": "系统设置",
-  "nav.sponsor": "赞助我们",
   "nav.portal": "用户门户",
   "nav.logout": "退出登录",
 
