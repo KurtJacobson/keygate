@@ -45,3 +45,6 @@ tests/
 *.out
 coverage.html
 seed
+
+# MkDocs build output
+/site/

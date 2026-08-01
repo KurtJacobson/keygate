@@ -1,0 +1,78 @@
+site_name: Keygate Documentation
+site_description: Self-hosted software license management platform — installation, configuration, integration, and operations.
+site_url: https://kurtjacobson.github.io/keygate/
+repo_url: https://github.com/kurtjacobson/keygate
+repo_name: kurtjacobson/keygate
+edit_uri: edit/docs/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.indexes
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Configuration: getting-started/configuration.md
+  - Concepts:
+      - Products & Plans: concepts/products-plans.md
+      - Licensing Models: concepts/licensing-models.md
+      - The Support Window: concepts/support-window.md
+  - Client Integration:
+      - SDK & Public Endpoints: integration/sdk.md
+      - Offline Token Verification: integration/offline-tokens.md
+      - Software Updates: integration/updates.md
+  - Billing:
+      - Stripe Integration: billing/stripe.md
+  - Administration:
+      - Admin API & API Keys: administration/admin-api.md
+      - Webhooks: administration/webhooks.md
+      - Seats & Email: administration/seats-email.md
+  - Self-Hosting:
+      - Deployment: self-hosting/deployment.md
+      - Security: self-hosting/security.md
+      - Maintenance & Updates: self-hosting/maintenance.md
+  - Reference:
+      - Environment Variables: reference/environment.md
+      - API Reference: reference/api.md
