@@ -845,6 +845,7 @@ func main() {
 		licWrite.POST("/licenses/:id/revoke", adminH.RevokeLicense)
 		licWrite.POST("/licenses/:id/suspend", adminH.SuspendLicense)
 		licWrite.POST("/licenses/:id/reinstate", adminH.ReinstateLicense)
+		licWrite.POST("/licenses/:id/valid-until", adminH.SetLicenseValidUntil)
 		licWrite.POST("/licenses/:id/change-plan", adminH.ChangeLicensePlan)
 		licWrite.GET("/licenses/:id/usage", adminH.ListLicenseUsage)
 		licWrite.POST("/licenses/:id/usage/reset", adminH.ResetLicenseUsage)
