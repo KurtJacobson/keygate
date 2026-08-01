@@ -313,10 +313,12 @@ function PlanDialog({
     max_seats: plan?.max_seats ?? 1,
     trial_days: plan?.trial_days ?? 0,
     grace_days: plan?.grace_days ?? 7,
+    support_days: plan?.support_days ?? 0,
     license_model: plan?.license_model || "standard",
     floating_timeout: plan?.floating_timeout ?? 30,
     active: plan?.active ?? true,
     stripe_price_id: plan?.stripe_price_id || "",
+    support_renewal_price_id: plan?.support_renewal_price_id || "",
   })
 
   const set = (key: string, val: string | number | boolean) => setForm((f) => ({ ...f, [key]: val }))
@@ -495,6 +497,16 @@ function PlanDialog({
                 onChange={(e) => set("grace_days", Number(e.target.value))}
               />
             </div>
+            <div className="space-y-2">
+              <Label>{t("plans.supportDays")}</Label>
+              <Input
+                type="number"
+                min={0}
+                value={form.support_days}
+                onChange={(e) => set("support_days", Number(e.target.value))}
+              />
+              <p className="text-xs text-muted-foreground">{t("plans.supportDaysHint")}</p>
+            </div>
             <div className="space-y-2 flex items-center gap-3 pt-5">
               <input
                 type="checkbox"
@@ -512,6 +524,15 @@ function PlanDialog({
                 onChange={(e) => set("stripe_price_id", e.target.value)}
                 placeholder="price_..."
               />
+            </div>
+            <div className="space-y-2">
+              <Label>{t("plans.supportRenewalPriceId")}</Label>
+              <Input
+                value={form.support_renewal_price_id}
+                onChange={(e) => set("support_renewal_price_id", e.target.value)}
+                placeholder="price_..."
+              />
+              <p className="text-xs text-muted-foreground">{t("plans.supportRenewalPriceIdHint")}</p>
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-2">

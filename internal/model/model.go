@@ -232,7 +232,16 @@ type Plan struct {
 	MaxActivations  int       `bun:",notnull" json:"max_activations"`
 	TrialDays       int       `bun:",notnull" json:"trial_days"`
 	GraceDays       int       `bun:",notnull" json:"grace_days"`
+	// SupportDays: default paid-support window for newly issued
+	// licenses (support_until = now + support_days). 0 = no default,
+	// meaning unlimited support unless set per-license. See
+	// License.SupportUntil for the enforcement semantics.
+	SupportDays int `bun:",notnull" json:"support_days"`
 	StripePriceID   string    `json:"stripe_price_id,omitempty"`
+	// SupportRenewalPriceID: Stripe price for a one-time support-window
+	// renewal (extends License.SupportUntil). Empty = self-serve support
+	// renewal not offered for this plan.
+	SupportRenewalPriceID string `bun:",notnull,default:''" json:"support_renewal_price_id,omitempty"`
 	LicenseModel    string    `bun:",notnull" json:"license_model"` // standard | floating
 	FloatingTimeout int       `bun:",notnull" json:"floating_timeout"`
 	MaxSeats        int       `bun:",notnull" json:"max_seats"`
@@ -286,9 +295,16 @@ type License struct {
 	StripeCustomerID     string `json:"stripe_customer_id,omitempty"`
 	StripeSubscriptionID string `bun:",unique,nullzero" json:"stripe_subscription_id,omitempty"`
 
-	Status      string     `bun:",notnull,default:'active'" json:"status"`
-	ValidFrom   time.Time  `bun:",notnull,default:now()" json:"valid_from"`
-	ValidUntil  *time.Time `json:"valid_until,omitempty"`
+	Status    string    `bun:",notnull,default:'active'" json:"status"`
+	ValidFrom time.Time `bun:",notnull,default:now()" json:"valid_from"`
+	ValidUntil *time.Time `json:"valid_until,omitempty"`
+	// SupportUntil gates updates/support, NOT the license itself
+	// (perpetual-license-with-paid-support model). nil = unlimited.
+	// Perpetual fallback: the customer can forever download releases
+	// PUBLISHED before this date; newer releases require renewal.
+	// Enforced in ReleaseService.GenerateDownload; /license/verify
+	// keeps succeeding regardless so the app itself never locks.
+	SupportUntil *time.Time `json:"support_until,omitempty"`
 	CanceledAt  *time.Time `json:"canceled_at,omitempty"`
 	SuspendedAt *time.Time `json:"suspended_at,omitempty"`
 	// PastDueAt anchors the dunning-email ladder. Set by the

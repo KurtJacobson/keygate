@@ -344,6 +344,59 @@ paths:
               schema:
                 $ref: "#/components/schemas/QuotaStatusResponse"
 
+  /license/support/checkout:
+    post:
+      tags: [License]
+      summary: Start a support-window renewal checkout
+      description: |
+        Creates a Stripe checkout session that, once paid, extends this
+        license's paid-support window (`support_until`) — it does NOT
+        create a new license. The one-time price comes from the
+        license's plan (`support_renewal_price_id`).
+
+        On payment, the Stripe webhook advances `support_until`, anchored
+        at `max(now, current support_until)` so early renewers stack
+        their remaining time, and by the plan's `support_days` (default
+        365). Fires a `license.support_renewed` webhook and emails a
+        confirmation.
+
+        Public + `license_key`-gated. Unknown keys and plans without a
+        renewal price collapse to 404 / 503 rather than confirming
+        license existence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [license_key]
+              properties:
+                license_key:
+                  type: string
+      responses:
+        "200":
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      checkout_url:
+                        type: string
+                        format: uri
+                        description: Redirect the customer here to pay.
+        "404":
+          description: License not found
+        "503":
+          description: |
+            `RENEWAL_NOT_AVAILABLE` — the license's plan has no
+            `support_renewal_price_id` configured.
+
   # Seat management moved off the SDK namespace (license_key is the
   # device credential, not a team-management credential). All three
   # endpoints now live under /portal and are gated by the portal
@@ -612,6 +665,14 @@ paths:
         If `version` is omitted, returns the latest published release
         in the channel that has an artifact for `platform`. Channel
         fallback chain applies (beta sees beta + stable, etc.).
+
+        **Support window (perpetual fallback):** when the license has
+        a `support_until` date, only releases *published* before that
+        date are downloadable — forever. Omitting `version` resolves
+        the newest covered release (lapsed customers can always
+        reinstall what they're entitled to); pinning a newer version
+        returns `403 SUPPORT_EXPIRED`. Licenses without a support
+        window are unrestricted.
       requestBody:
         required: true
         content:
@@ -673,7 +734,10 @@ paths:
         "400":
           description: Invalid platform / channel
         "403":
-          description: License inactive (cannot download)
+          description: |
+            - License inactive (cannot download)
+            - `SUPPORT_EXPIRED` — the pinned version was published
+              after the license's support window ended
         "404":
           description: License not found or no release matches
         "410":
@@ -869,6 +933,16 @@ components:
               type: string
               format: date-time
               nullable: true
+            support_until:
+              type: string
+              format: date-time
+              nullable: true
+              description: |
+                End of the paid support/updates window (perpetual
+                license + paid support model). Absent/null = unlimited.
+                The license stays valid past this date — it only gates
+                release downloads (see /license/download). Also present
+                in the signed token as `sup` (unix seconds, 0 = unlimited).
             features:
               type: object
               description: "Key-value map of feature entitlements"

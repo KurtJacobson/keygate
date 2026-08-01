@@ -236,8 +236,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats        int    `json:"max_seats"`
 		TrialDays       int    `json:"trial_days"`
 		GraceDays       int    `json:"grace_days"`
-		StripePriceID   string `json:"stripe_price_id"`
-		LicenseModel    string `json:"license_model"`
+		SupportDays     int    `json:"support_days"`
+		StripePriceID         string `json:"stripe_price_id"`
+		SupportRenewalPriceID string `json:"support_renewal_price_id"`
+		LicenseModel          string `json:"license_model"`
 		FloatingTimeout int    `json:"floating_timeout"`
 		SortOrder       int    `json:"sort_order"`
 	}
@@ -267,6 +269,7 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
 		GraceDays:       req.GraceDays,
+		SupportDays:     req.SupportDays,
 		FloatingTimeout: req.FloatingTimeout,
 	}); err != nil {
 		response.BadRequest(c, err.Error())
@@ -332,8 +335,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
 		GraceDays:       req.GraceDays,
-		StripePriceID:   req.StripePriceID,
-		LicenseModel:    licenseModel,
+		SupportDays:           req.SupportDays,
+		StripePriceID:         req.StripePriceID,
+		SupportRenewalPriceID: req.SupportRenewalPriceID,
+		LicenseModel:          licenseModel,
 		FloatingTimeout: floatingTimeout,
 		Active:          true,
 		SortOrder:       req.SortOrder,
@@ -368,7 +373,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		MaxSeats        *int    `json:"max_seats"`
 		TrialDays       *int    `json:"trial_days"`
 		GraceDays       *int    `json:"grace_days"`
-		StripePriceID   *string `json:"stripe_price_id"`
+		SupportDays           *int    `json:"support_days"`
+		StripePriceID         *string `json:"stripe_price_id"`
+		SupportRenewalPriceID *string `json:"support_renewal_price_id"`
 		LicenseModel    *string `json:"license_model"`
 		FloatingTimeout *int    `json:"floating_timeout"`
 		Active          *bool   `json:"active"`
@@ -427,6 +434,7 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	check := planBounds{
 		MaxActivations: p.MaxActivations, MaxSeats: p.MaxSeats,
 		TrialDays: p.TrialDays, GraceDays: p.GraceDays,
+		SupportDays:     p.SupportDays,
 		FloatingTimeout: p.FloatingTimeout,
 	}
 	if req.MaxActivations != nil {
@@ -440,6 +448,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	}
 	if req.GraceDays != nil {
 		check.GraceDays = *req.GraceDays
+	}
+	if req.SupportDays != nil {
+		check.SupportDays = *req.SupportDays
 	}
 	if req.FloatingTimeout != nil {
 		check.FloatingTimeout = *req.FloatingTimeout
@@ -470,11 +481,17 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	if req.TrialDays != nil {
 		p.TrialDays = *req.TrialDays
 	}
+	if req.SupportDays != nil {
+		p.SupportDays = *req.SupportDays
+	}
 	if req.GraceDays != nil {
 		p.GraceDays = *req.GraceDays
 	}
 	if req.StripePriceID != nil {
 		p.StripePriceID = *req.StripePriceID
+	}
+	if req.SupportRenewalPriceID != nil {
+		p.SupportRenewalPriceID = *req.SupportRenewalPriceID
 	}
 	if req.LicenseModel != nil {
 		p.LicenseModel = *req.LicenseModel
@@ -703,6 +720,7 @@ type planBounds struct {
 	MaxSeats        int
 	TrialDays       int
 	GraceDays       int
+	SupportDays     int
 	FloatingTimeout int // minutes
 }
 
@@ -724,6 +742,10 @@ func validatePlanNumericBounds(b planBounds) error {
 		return fmt.Errorf("grace_days cannot be negative")
 	case b.GraceDays > 365:
 		return fmt.Errorf("grace_days cannot exceed 365")
+	case b.SupportDays < 0:
+		return fmt.Errorf("support_days cannot be negative")
+	case b.SupportDays > 3650:
+		return fmt.Errorf("support_days cannot exceed 3650 (10 years)")
 	case b.FloatingTimeout < 0:
 		return fmt.Errorf("floating_timeout cannot be negative")
 	case b.FloatingTimeout > 1440:
@@ -850,6 +872,10 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 		// plan decides: trial plans get now+trial_days, everything else
 		// is perpetual. When set it wins over the trial default.
 		ValidUntil string `json:"valid_until"`
+		// SupportUntil sets an explicit paid-support end date (RFC
+		// 3339). Empty means the plan decides: now+support_days when
+		// the plan sets support_days, otherwise unlimited.
+		SupportUntil string `json:"support_until"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "product_id, plan_id, and email are required")
@@ -884,6 +910,19 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 			return
 		}
 		validUntil = &ts
+	}
+	var supportUntil *time.Time
+	if req.SupportUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.SupportUntil)
+		if err != nil {
+			response.BadRequest(c, "support_until must be an RFC 3339 timestamp")
+			return
+		}
+		if !ts.After(time.Now()) {
+			response.BadRequest(c, "support_until must be in the future")
+			return
+		}
+		supportUntil = &ts
 	}
 
 	// Look up plan first to determine license type and set appropriate fields
@@ -931,6 +970,15 @@ func (h *AdminHandler) CreateLicense(c *gin.Context) {
 	} else if plan.LicenseType == "trial" && plan.TrialDays > 0 {
 		until := time.Now().Add(time.Duration(plan.TrialDays) * 24 * time.Hour)
 		l.ValidUntil = &until
+	}
+
+	// Set support_until the same way: explicit value wins, otherwise
+	// the plan's support_days default applies (0 = unlimited support).
+	if supportUntil != nil {
+		l.SupportUntil = supportUntil
+	} else if plan.SupportDays > 0 {
+		until := time.Now().Add(time.Duration(plan.SupportDays) * 24 * time.Hour)
+		l.SupportUntil = &until
 	}
 
 	// Create license and subscription in a single transaction to prevent orphan records
@@ -1132,6 +1180,54 @@ func (h *AdminHandler) SetLicenseValidUntil(c *gin.Context) {
 		Entity: "license", EntityID: id, Action: "valid_until_changed",
 		ActorType: "admin", ActorID: adminID(c),
 		Changes: map[string]any{"valid_until": req.ValidUntil},
+	})
+	response.OK(c, lic)
+}
+
+// SetLicenseSupportUntil sets or clears a license's paid-support end
+// date (the "support renewal" action). An empty valid_until grants
+// unlimited support. Unlike valid_until this never interacts with
+// license status — support lapse is not a lifecycle event, it only
+// gates release downloads (perpetual fallback).
+func (h *AdminHandler) SetLicenseSupportUntil(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	var req struct {
+		SupportUntil string `json:"support_until"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+
+	lic, err := h.Store.FindLicenseByID(c, id)
+	if err != nil {
+		response.NotFound(c, "license not found")
+		return
+	}
+
+	var supportUntil *time.Time
+	if req.SupportUntil != "" {
+		ts, err := time.Parse(time.RFC3339, req.SupportUntil)
+		if err != nil {
+			response.BadRequest(c, "support_until must be an RFC 3339 timestamp or empty")
+			return
+		}
+		supportUntil = &ts
+	}
+
+	lic.SupportUntil = supportUntil
+	if err := h.Store.UpdateLicense(c, lic, "support_until"); err != nil {
+		response.Internal(c)
+		return
+	}
+
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "license", EntityID: id, Action: "support_until_changed",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{"support_until": req.SupportUntil},
 	})
 	response.OK(c, lic)
 }
