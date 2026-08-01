@@ -8,12 +8,11 @@
 
 可自托管的 Keygen、Cryptlex、LicenseSpring 替代方案。
 
-[官网](https://keygate.app) · [文档](https://keygate.app/docs) · [社区](https://github.com/tabloy/keygate/discussions)
+[官网](https://keygate.app) · [文档](https://keygate.app/docs) · [社区](https://github.com/kurtjacobson/keygate/discussions)
 
 [![License](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/tabloy/keygate?label=release&color=green)](https://github.com/tabloy/keygate/releases)
-[![Stars](https://img.shields.io/github/stars/tabloy/keygate?style=flat)](https://github.com/tabloy/keygate/stargazers)
-[![Sponsor](https://img.shields.io/badge/sponsor-❤-ff69b4)](https://keygate.app/sponsorships)
+[![Release](https://img.shields.io/github/v/release/kurtjacobson/keygate?label=release&color=green)](https://github.com/kurtjacobson/keygate/releases)
+[![Stars](https://img.shields.io/github/stars/kurtjacobson/keygate?style=flat)](https://github.com/kurtjacobson/keygate/stargazers)
 
 **[English](README.md)** · **[简体中文](README.zh-CN.md)**
 
@@ -98,8 +97,8 @@ Stripe 端到端集成，**三层可靠性保障** — Webhook、成功页验证
 
 ```bash
 # 1. 下载
-curl -O https://raw.githubusercontent.com/tabloy/keygate/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/tabloy/keygate/main/.env.example
+curl -O https://raw.githubusercontent.com/kurtjacobson/keygate/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/kurtjacobson/keygate/main/.env.example
 cp .env.example .env
 
 # 2. 设置密钥
@@ -112,7 +111,7 @@ docker compose up -d
 ### 从源码构建
 
 ```bash
-git clone https://github.com/tabloy/keygate.git
+git clone https://github.com/kurtjacobson/keygate.git
 cd keygate && cp .env.example .env
 make build && ./bin/keygate
 ```
@@ -145,14 +144,13 @@ make build && ./bin/keygate
 
 ## 社区
 
-- **[讨论区](https://github.com/tabloy/keygate/discussions)** — 提问、分享想法
-- **[Issues](https://github.com/tabloy/keygate/issues)** — Bug 报告和功能请求
+- **[讨论区](https://github.com/kurtjacobson/keygate/discussions)** — 提问、分享想法
+- **[Issues](https://github.com/kurtjacobson/keygate/issues)** — Bug 报告和功能请求
 - **[博客](https://keygate.app/blog)** — 产品更新和技术文章
-- **[赞助](https://keygate.app/sponsorships)** — 支持项目发展
 
 ## 贡献
 
-欢迎所有形式的贡献 — Bug 修复、新功能、文档改进、翻译等。查看 [open issues](https://github.com/tabloy/keygate/issues) 或发起 [讨论](https://github.com/tabloy/keygate/discussions)，然后提交 PR。
+欢迎所有形式的贡献 — Bug 修复、新功能、文档改进、翻译等。查看 [open issues](https://github.com/kurtjacobson/keygate/issues) 或发起 [讨论](https://github.com/kurtjacobson/keygate/discussions)，然后提交 PR。
 
 ## 许可证
 
@@ -162,11 +160,11 @@ make build && ./bin/keygate
 
 ## Star 趋势
 
-<a href="https://star-history.com/#tabloy/keygate&Date">
+<a href="https://star-history.com/#kurtjacobson/keygate&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date" width="600" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date" width="600" />
  </picture>
 </a>
 

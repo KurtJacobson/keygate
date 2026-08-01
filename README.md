@@ -8,12 +8,11 @@
 
 The self-hosted alternative to Keygen, Cryptlex, and LicenseSpring.
 
-[Website](https://keygate.app) · [Documentation](https://keygate.app/docs) · [Community](https://github.com/tabloy/keygate/discussions)
+[Website](https://keygate.app) · [Documentation](https://keygate.app/docs) · [Community](https://github.com/kurtjacobson/keygate/discussions)
 
 [![License](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/tabloy/keygate?label=release&color=green)](https://github.com/tabloy/keygate/releases)
-[![Stars](https://img.shields.io/github/stars/tabloy/keygate?style=flat)](https://github.com/tabloy/keygate/stargazers)
-[![Sponsor](https://img.shields.io/badge/sponsor-❤-ff69b4)](https://keygate.app/sponsorships)
+[![Release](https://img.shields.io/github/v/release/kurtjacobson/keygate?label=release&color=green)](https://github.com/kurtjacobson/keygate/releases)
+[![Stars](https://img.shields.io/github/stars/kurtjacobson/keygate?style=flat)](https://github.com/kurtjacobson/keygate/stargazers)
 
 **[English](README.md)** · **[简体中文](README.zh-CN.md)**
 
@@ -98,8 +97,8 @@ Single Go binary + PostgreSQL + (optional) S3-compatible storage for release art
 
 ```bash
 # 1. Download
-curl -O https://raw.githubusercontent.com/tabloy/keygate/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/tabloy/keygate/main/.env.example
+curl -O https://raw.githubusercontent.com/kurtjacobson/keygate/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/kurtjacobson/keygate/main/.env.example
 cp .env.example .env
 
 # 2. Set your secrets
@@ -112,7 +111,7 @@ docker compose up -d
 ### From source
 
 ```bash
-git clone https://github.com/tabloy/keygate.git
+git clone https://github.com/kurtjacobson/keygate.git
 cd keygate && cp .env.example .env
 make build && ./bin/keygate
 ```
@@ -145,14 +144,13 @@ Open **http://localhost:9000** — the setup wizard guides you from there.
 
 ## Community
 
-- **[Discussions](https://github.com/tabloy/keygate/discussions)** — Questions, ideas, show & tell
-- **[Issues](https://github.com/tabloy/keygate/issues)** — Bug reports and feature requests
+- **[Discussions](https://github.com/kurtjacobson/keygate/discussions)** — Questions, ideas, show & tell
+- **[Issues](https://github.com/kurtjacobson/keygate/issues)** — Bug reports and feature requests
 - **[Blog](https://keygate.app/blog)** — Updates and engineering stories
-- **[Sponsor](https://keygate.app/sponsorships)** — Support the project
 
 ## Contributing
 
-All contributions welcome — bugs, features, docs, translations. Check [open issues](https://github.com/tabloy/keygate/issues) or start a [discussion](https://github.com/tabloy/keygate/discussions), then submit a PR.
+All contributions welcome — bugs, features, docs, translations. Check [open issues](https://github.com/kurtjacobson/keygate/issues) or start a [discussion](https://github.com/kurtjacobson/keygate/discussions), then submit a PR.
 
 ## License
 
@@ -162,11 +160,11 @@ You are free to fork, modify, and self-host this software under the AGPL v3. The
 
 ## Star History
 
-<a href="https://star-history.com/#tabloy/keygate&Date">
+<a href="https://star-history.com/#kurtjacobson/keygate&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=tabloy/keygate&type=Date" width="600" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=kurtjacobson/keygate&type=Date" width="600" />
  </picture>
 </a>
 
