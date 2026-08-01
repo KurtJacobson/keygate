@@ -552,6 +552,12 @@ func main() {
 	// Unified checkout: GET /pay/:checkout_id → Stripe
 	r.GET("/pay/:checkout_id", stripeH.CheckoutByPlan)
 
+	// Support-window renewal checkout: POST { license_key } → Stripe URL.
+	// Public + license_key-gated; on payment the webhook extends support_until.
+	v1.POST("/license/support/checkout",
+		middleware.RateLimitByIP(cfg.RateLimitAPI, time.Minute),
+		stripeH.SupportRenewalCheckout)
+
 	portal := v1.Group("/portal", middleware.SessionAuth(cfg.JWTSecret, db.FindUserIsAdmin))
 	{
 		portal.GET("/me", authH.Me)

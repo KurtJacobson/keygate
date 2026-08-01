@@ -189,6 +189,68 @@ func (h *StripeHandler) CheckoutByPlan(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, s.URL)
 }
 
+// SupportRenewalCheckout starts a Stripe checkout that, on payment,
+// extends an existing license's support window (licenses.support_until)
+// rather than creating a new license. Public and license_key-gated —
+// the same 404-collapse as the SDK so it can't be used to probe which
+// keys exist.
+//
+// Body: { "license_key": "KG-..." }  →  { "checkout_url": "https://..." }
+//
+// The one-time price comes from the license's plan
+// (support_renewal_price_id). The support extension itself happens in
+// the webhook (renewSupport), gated on metadata.purpose.
+func (h *StripeHandler) SupportRenewalCheckout(c *gin.Context) {
+	var req struct {
+		LicenseKey string `json:"license_key" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "license_key is required")
+		return
+	}
+
+	lic, err := h.Store.FindLicenseByKey(c.Request.Context(), req.LicenseKey)
+	if err != nil || lic == nil {
+		response.NotFound(c, "license not found")
+		return
+	}
+	plan, err := h.Store.FindPlanByID(c.Request.Context(), lic.PlanID)
+	if err != nil || plan == nil || plan.SupportRenewalPriceID == "" {
+		response.Err(c, http.StatusServiceUnavailable, "RENEWAL_NOT_AVAILABLE",
+			"support renewal is not offered for this license")
+		return
+	}
+
+	params := &stripe.CheckoutSessionParams{
+		Mode: stripe.String(string(stripe.CheckoutSessionModePayment)), // one-time
+		LineItems: []*stripe.CheckoutSessionLineItemParams{
+			{Price: stripe.String(plan.SupportRenewalPriceID), Quantity: stripe.Int64(1)},
+		},
+		SuccessURL:          stripe.String(h.BaseURL + "/checkout/success?session_id={CHECKOUT_SESSION_ID}"),
+		CancelURL:           stripe.String(h.BaseURL + "/pricing"),
+		AllowPromotionCodes: stripe.Bool(true),
+	}
+	params.Metadata = map[string]string{
+		"purpose":    "support_renewal",
+		"license_id": lic.ID,
+		"product_id": lic.ProductID,
+	}
+	// Reuse the customer if we know it, else prefill the email.
+	if lic.StripeCustomerID != "" {
+		params.Customer = stripe.String(lic.StripeCustomerID)
+	} else if lic.Email != "" {
+		params.CustomerEmail = stripe.String(lic.Email)
+	}
+
+	s, err := session.New(params)
+	if err != nil {
+		slog.Error("stripe: support renewal session failed", "license_id", lic.ID, "error", err)
+		response.Internal(c)
+		return
+	}
+	response.OK(c, gin.H{"checkout_url": s.URL})
+}
+
 func (h *StripeHandler) Webhook(c *gin.Context) {
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -285,7 +347,72 @@ func (h *StripeHandler) onCheckoutCompleted(ctx context.Context, raw json.RawMes
 		data.Metadata = map[string]string{}
 	}
 	data.Metadata["session_id"] = data.ID
+
+	// Support-window renewal extends an existing license instead of
+	// creating a new one — route on the purpose flag we set at checkout.
+	if data.Metadata["purpose"] == "support_renewal" {
+		h.renewSupport(ctx, data.Metadata["license_id"], data.ID)
+		return
+	}
+
 	h.fulfillCheckout(ctx, data.CustomerEmail, data.Customer, data.Subscription, data.Metadata, "webhook")
+}
+
+// renewSupport extends a license's support window after a paid renewal.
+// The new support_until is anchored at max(now, current support_until)
+// so early renewers stack their remaining time rather than losing it,
+// while a lapsed license renews from today. The extension length is the
+// plan's support_days (falling back to 365 if unset).
+func (h *StripeHandler) renewSupport(ctx context.Context, licenseID, sessionID string) {
+	if licenseID == "" {
+		slog.Warn("stripe support renewal: no license_id in metadata", "session", sessionID)
+		return
+	}
+	// Idempotency: never apply the same paid session twice.
+	if sessionID != "" && !h.Store.TryRecordProcessedEvent(ctx, "stripe_support_renewal", sessionID) {
+		return
+	}
+
+	lic, err := h.Store.FindLicenseByID(ctx, licenseID)
+	if err != nil || lic == nil {
+		slog.Error("stripe support renewal: license not found", "license_id", licenseID)
+		return
+	}
+	days := 365
+	if plan, perr := h.Store.FindPlanByID(ctx, lic.PlanID); perr == nil && plan != nil && plan.SupportDays > 0 {
+		days = plan.SupportDays
+	}
+
+	anchor := time.Now()
+	if lic.SupportUntil != nil && lic.SupportUntil.After(anchor) {
+		anchor = *lic.SupportUntil
+	}
+	until := anchor.Add(time.Duration(days) * 24 * time.Hour)
+	lic.SupportUntil = &until
+	if err := h.Store.UpdateLicense(ctx, lic, "support_until"); err != nil {
+		slog.Error("stripe support renewal: update failed", "license_id", licenseID, "error", err)
+		return
+	}
+
+	h.Store.Audit(ctx, &model.AuditLog{
+		Entity: "license", EntityID: lic.ID, Action: "support_renewed",
+		ActorType: "stripe",
+		Changes:   map[string]any{"support_until": until.Format(time.RFC3339), "days": days},
+	})
+	if h.WebhookSvc != nil {
+		h.WebhookSvc.Dispatch(ctx, lic.ProductID, "license.support_renewed", map[string]any{
+			"license_id": lic.ID, "email": lic.Email,
+			"support_until": until.Format(time.RFC3339),
+		})
+	}
+	if h.Email != nil && h.Email.IsConfigured() && lic.Email != "" {
+		productName := ""
+		if prod, perr := h.Store.FindProductByID(ctx, lic.ProductID); perr == nil && prod != nil {
+			productName = prod.Name
+		}
+		h.Email.SendSupportRenewed(lic.Email, productName, until.Format("2006-01-02"))
+	}
+	slog.Info("stripe support renewal applied", "license_id", lic.ID, "support_until", until)
 }
 
 // fulfillCheckout creates a license for a completed checkout session.
