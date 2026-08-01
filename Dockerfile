@@ -37,7 +37,7 @@ LABEL org.opencontainers.image.title="Keygate" \
       org.opencontainers.image.description="Open source license management platform" \
       org.opencontainers.image.vendor="Tabloy" \
       org.opencontainers.image.url="https://keygate.app" \
-      org.opencontainers.image.source="https://github.com/tabloy/keygate" \
+      org.opencontainers.image.source="https://github.com/kurtjacobson/keygate" \
       org.opencontainers.image.licenses="AGPL-3.0"
 
 EXPOSE 9000

@@ -1,6 +1,6 @@
 services:
   keygate:
-    image: ghcr.io/tabloy/keygate:latest
+    image: ghcr.io/kurtjacobson/keygate:latest
     # build: .  # uncomment to build from source
     ports:
       - "9000:9000"

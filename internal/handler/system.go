@@ -40,7 +40,7 @@ type updateInfo struct {
 func NewSystemHandler(s *store.Store) *SystemHandler {
 	return &SystemHandler{
 		Store:     s,
-		RepoOwner: "tabloy",
+		RepoOwner: "kurtjacobson",
 		RepoName:  "keygate",
 	}
 }
