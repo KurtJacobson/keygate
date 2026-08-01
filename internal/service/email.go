@@ -74,6 +74,7 @@ func DefaultTemplates() map[string]string {
 		"license_suspended": tmplLicenseSuspended,
 		"support_expiring":  tmplSupportExpiring,
 		"support_ended":     tmplSupportEnded,
+		"support_renewed":   tmplSupportRenewed,
 		"quota_warning":     tmplQuotaWarning,
 		"seat_invite":       tmplSeatInvite,
 		"admin_invite":      tmplAdminInvite,
@@ -387,6 +388,21 @@ func (s *EmailService) SendSupportEnded(to, productName, licenseKey string) {
 		"LicenseKey": licenseKey,
 	})
 	subject := productName + " support & updates have ended"
+	go func() {
+		if err := s.Send(to, subject, body); err != nil {
+			s.logger.Error("email delivery failed", "to", to, "subject", subject, "error", err)
+		}
+	}()
+}
+
+// SendSupportRenewed confirms a paid support-window renewal and the new
+// end date.
+func (s *EmailService) SendSupportRenewed(to, productName, renewedUntil string) {
+	body := renderTemplate(s.getTemplate("support_renewed", tmplSupportRenewed), map[string]string{
+		"Product":      productName,
+		"RenewedUntil": renewedUntil,
+	})
+	subject := productName + " support & updates renewed"
 	go func() {
 		if err := s.Send(to, subject, body); err != nil {
 			s.logger.Error("email delivery failed", "to", to, "subject", subject, "error", err)
@@ -737,6 +753,13 @@ const tmplSupportEnded = `<!DOCTYPE html>
 <p>The support and updates window for your <strong>{{.Product}}</strong> license has ended.</p>
 <p>License key: <code>{{.LicenseKey}}</code></p>
 <p>Your license remains valid and you can keep using — and reinstalling — every version released during your support window. Renew support any time to receive new releases again.</p>
+</body></html>`
+
+const tmplSupportRenewed = `<!DOCTYPE html>
+<html><body style="font-family: -apple-system, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+<h2 style="color: #111;">Support &amp; Updates Renewed</h2>
+<p>Thanks — your support and updates window for <strong>{{.Product}}</strong> now runs through <strong>{{.RenewedUntil}}</strong>.</p>
+<p>You'll keep receiving new releases and support until then. No need to reinstall anything; your existing license key still works.</p>
 </body></html>`
 
 const tmplQuotaWarning = `<!DOCTYPE html>
