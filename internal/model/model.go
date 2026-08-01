@@ -238,6 +238,10 @@ type Plan struct {
 	// License.SupportUntil for the enforcement semantics.
 	SupportDays int `bun:",notnull" json:"support_days"`
 	StripePriceID   string    `json:"stripe_price_id,omitempty"`
+	// SupportRenewalPriceID: Stripe price for a one-time support-window
+	// renewal (extends License.SupportUntil). Empty = self-serve support
+	// renewal not offered for this plan.
+	SupportRenewalPriceID string `bun:",notnull,default:''" json:"support_renewal_price_id,omitempty"`
 	LicenseModel    string    `bun:",notnull" json:"license_model"` // standard | floating
 	FloatingTimeout int       `bun:",notnull" json:"floating_timeout"`
 	MaxSeats        int       `bun:",notnull" json:"max_seats"`
