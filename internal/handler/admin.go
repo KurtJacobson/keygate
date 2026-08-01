@@ -237,8 +237,9 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		TrialDays       int    `json:"trial_days"`
 		GraceDays       int    `json:"grace_days"`
 		SupportDays     int    `json:"support_days"`
-		StripePriceID   string `json:"stripe_price_id"`
-		LicenseModel    string `json:"license_model"`
+		StripePriceID         string `json:"stripe_price_id"`
+		SupportRenewalPriceID string `json:"support_renewal_price_id"`
+		LicenseModel          string `json:"license_model"`
 		FloatingTimeout int    `json:"floating_timeout"`
 		SortOrder       int    `json:"sort_order"`
 	}
@@ -334,9 +335,10 @@ func (h *AdminHandler) CreatePlan(c *gin.Context) {
 		MaxSeats:        req.MaxSeats,
 		TrialDays:       req.TrialDays,
 		GraceDays:       req.GraceDays,
-		SupportDays:     req.SupportDays,
-		StripePriceID:   req.StripePriceID,
-		LicenseModel:    licenseModel,
+		SupportDays:           req.SupportDays,
+		StripePriceID:         req.StripePriceID,
+		SupportRenewalPriceID: req.SupportRenewalPriceID,
+		LicenseModel:          licenseModel,
 		FloatingTimeout: floatingTimeout,
 		Active:          true,
 		SortOrder:       req.SortOrder,
@@ -371,8 +373,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 		MaxSeats        *int    `json:"max_seats"`
 		TrialDays       *int    `json:"trial_days"`
 		GraceDays       *int    `json:"grace_days"`
-		SupportDays     *int    `json:"support_days"`
-		StripePriceID   *string `json:"stripe_price_id"`
+		SupportDays           *int    `json:"support_days"`
+		StripePriceID         *string `json:"stripe_price_id"`
+		SupportRenewalPriceID *string `json:"support_renewal_price_id"`
 		LicenseModel    *string `json:"license_model"`
 		FloatingTimeout *int    `json:"floating_timeout"`
 		Active          *bool   `json:"active"`
@@ -486,6 +489,9 @@ func (h *AdminHandler) UpdatePlan(c *gin.Context) {
 	}
 	if req.StripePriceID != nil {
 		p.StripePriceID = *req.StripePriceID
+	}
+	if req.SupportRenewalPriceID != nil {
+		p.SupportRenewalPriceID = *req.SupportRenewalPriceID
 	}
 	if req.LicenseModel != nil {
 		p.LicenseModel = *req.LicenseModel
