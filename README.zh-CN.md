@@ -52,7 +52,7 @@
 
 一个平台覆盖所有模式 — **订阅制**、**永久买断**、**免费试用**、**浮动许可**（并发）和**永久买断 + 付费支持**。创建、激活、验证、暂停、恢复和吊销，全程审计追踪。按设备或按用户的激活限制，**原子级强制**（重试不会重复计数）。宽限期。许可证密钥 SHA-256 哈希存储，落盘加密。Ed25519 签名 token 支持离线验证（服务端持私钥,客户端通过 `/license/pubkey` 拿公钥本地验签）。**`Idempotency-Key` 头**支持 — 写入重试永不重复。
 
-**永久买断 + 付费支持**（JetBrains 模式）：用独立于许可证本身的**支持期窗口**（`support_until`）来限制更新。许可证永不过期，但付费支持/更新窗口会过期 — 客户可永久获取支持期内发布的所有版本，续费后即可获得更新版本。按套餐设置 `support_days` 默认值，通过 `POST /admin/licenses/:id/support-until` 按许可证覆盖，`support_until` 在验证响应和签名 token 中返回，自动发送续费提醒和到期邮件，以及 `license.support_ended` webhook。
+**永久买断 + 付费支持**（JetBrains 模式）：用独立于许可证本身的**支持期窗口**（`support_until`）来限制更新。许可证永不过期，但付费支持/更新窗口会过期 — 客户可永久获取支持期内发布的所有版本，续费后即可获得更新版本。按套餐设置 `support_days` 默认值，通过 `POST /admin/licenses/:id/support-until` 按许可证覆盖，`support_until` 在验证响应和签名 token 中返回，自动发送续费提醒和到期邮件，以及 `license.support_ended` webhook。**Stripe 自助续费**：客户可通过 `POST /license/support/checkout` 自行延长支持期 — 一次性付费结账（按套餐设置 `support_renewal_price_id`），在当前日期基础上叠加时长（提前续费不会损失已付天数），触发 `license.support_renewed` webhook 并发送确认邮件。
 
 公开 SDK 端点（activate / verify / deactivate / usage / download）直接用 `license_key`，无需在二进制里嵌入 API 密钥。客户可在门户自助释放激活槽（丢笔记本不用提工单）。
 
