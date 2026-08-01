@@ -42,10 +42,15 @@ export function SiteConfigProvider({ children }: { children: ReactNode }) {
           attribution_url: data.attribution_url || "https://keygate.app",
           loading: false,
         })
-        // Dynamic favicon from custom logo
+        // Dynamic favicon from custom logo. index.html declares
+        // multiple <link rel="icon"> variants and browsers pick their
+        // favorite (often the sizes="32x32" one), so rewriting only
+        // the first link never visibly changed the tab icon — update
+        // them all.
         if (data.logo_url) {
-          const link = document.querySelector("link[rel='icon']") as HTMLLinkElement
-          if (link) link.href = data.logo_url
+          document.querySelectorAll<HTMLLinkElement>("link[rel~='icon']").forEach((link) => {
+            link.href = data.logo_url
+          })
         }
         if (data.brand_color) {
           document.documentElement.style.setProperty("--color-primary", data.brand_color)
