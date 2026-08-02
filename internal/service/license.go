@@ -528,3 +528,58 @@ func (s *LicenseService) signToken(lic *model.License, identifier string) (strin
 	}
 	return license.Sign(t, s.signingKey)
 }
+
+// IssueOfflineToken mints a long-lived, machine-bound license token for
+// an air-gapped device that will never call /activate or /verify. The
+// identifier is the device's machine code, supplied out-of-band by the
+// customer; the returned token is delivered as a file and verified
+// entirely offline against the license public key (GET /license/pubkey).
+//
+// Unlike signToken (a 7-day online re-check token), this defaults to
+// perpetual: expiresAt nil issues a token with exp=0, which Verify
+// treats as never-expiring. The token is bound to
+// Fingerprint(identifier, product) so a leaked file can't be replayed
+// on another machine. There is deliberately no offline revocation — a
+// perpetual token is valid forever, so callers wanting a kill switch
+// must pass a bounded expiresAt and re-issue on renewal.
+func (s *LicenseService) IssueOfflineToken(ctx context.Context, licenseID, identifier string, expiresAt *time.Time) (token, fingerprint string, err error) {
+	if identifier == "" {
+		return "", "", apperr.New(400, "IDENTIFIER_REQUIRED", "machine identifier is required")
+	}
+	lic, err := s.store.FindLicenseByID(ctx, licenseID)
+	if err != nil {
+		return "", "", apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+	}
+	switch lic.Status {
+	case model.StatusActive, model.StatusTrialing:
+		// issuable
+	default:
+		return "", "", apperr.New(409, "LICENSE_NOT_ISSUABLE",
+			"license must be active or trialing to issue an offline token")
+	}
+
+	now := time.Now()
+	fpr := license.Fingerprint(identifier, lic.ProductID)
+	t := &license.VerifyToken{
+		LicenseID:   lic.ID,
+		ProductID:   lic.ProductID,
+		PlanID:      lic.PlanID,
+		Status:      lic.Status,
+		Identifier:  identifier,
+		Features:    s.entitlements(lic),
+		IssuedAt:    now.Unix(),
+		GraceDays:   s.graceDays(lic),
+		Fingerprint: fpr,
+	}
+	if expiresAt != nil {
+		t.ExpiresAt = expiresAt.Unix()
+	}
+	if lic.SupportUntil != nil {
+		t.SupportUntil = lic.SupportUntil.Unix()
+	}
+	signed, err := license.Sign(t, s.signingKey)
+	if err != nil {
+		return "", "", err
+	}
+	return signed, fpr, nil
+}
