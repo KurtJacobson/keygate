@@ -44,7 +44,9 @@ tests/
 *.test
 *.out
 coverage.html
-seed
+# Compiled seed binary at repo root — anchored so it doesn't also
+# ignore the cmd/seed/ source directory.
+/seed
 
 # Local Docker Compose override (build from source)
 docker-compose.override.yml
