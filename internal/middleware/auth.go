@@ -64,7 +64,7 @@ func SessionAuth(secret string, adminCheck ...AdminChecker) gin.HandlerFunc {
 		claims := &Claims{}
 		tok, err := jwt.ParseWithClaims(raw, claims, func(*jwt.Token) (any, error) {
 			return []byte(secret), nil
-		})
+		}, jwt.WithValidMethods([]string{"HS256"}))
 		if err != nil || !tok.Valid {
 			abortWithError(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid or expired token")
 			return
