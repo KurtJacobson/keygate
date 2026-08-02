@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* Tailwind v4 changed the default border color from a light gray to
+   currentColor, which made every bare `border` utility render in the
+   near-black text color. Restore the theme's soft border token as the
+   default so cards, tables, and inputs get subtle separators. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+}
+
 @theme {
   --color-background: oklch(1 0 0);
   --color-foreground: oklch(0.145 0 0);
