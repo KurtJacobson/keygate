@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, Copy, Key, Trash2 } from "lucide-react"
+import { Check, Copy, Download, FileKey2, Key, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { showToast } from "@/components/toast"
 import {
@@ -229,6 +229,7 @@ function ActivationsSection({ license }: { license: License }) {
   const { user } = useAuth()
   const qc = useQueryClient()
   const [removing, setRemoving] = useState<Activation | null>(null)
+  const [offlineOpen, setOfflineOpen] = useState(false)
 
   // The dedicated activations endpoint requires the caller to be the
   // license owner OR an *accepted* seat (portal_activations.go:84 —
@@ -313,6 +314,10 @@ function ActivationsSection({ license }: { license: License }) {
 
   const activations = actQuery.data?.activations || []
   const max = actQuery.data?.max ?? 0
+  const hasOffline = activations.some((a) => a.identifier_type === "offline")
+  // SaaS products don't use device activation, so offline licensing
+  // doesn't apply (the backend also 404s the endpoint for them).
+  const supportsOffline = license.product?.type !== "saas"
 
   return (
     <div className="space-y-3">
@@ -321,6 +326,11 @@ function ActivationsSection({ license }: { license: License }) {
           {t("portal.activeDevices")} ({activations.length}
           {max > 0 ? `/${max}` : ""})
         </p>
+        {supportsOffline && !hasOffline && (
+          <Button variant="outline" size="sm" onClick={() => setOfflineOpen(true)}>
+            <FileKey2 className="h-4 w-4 mr-1" /> {t("portal.offlineActivate")}
+          </Button>
+        )}
       </div>
 
       {actQuery.isLoading ? (
@@ -329,31 +339,48 @@ function ActivationsSection({ license }: { license: License }) {
         <p className="text-sm text-muted-foreground py-4 text-center">{t("portal.noDevices")}</p>
       ) : (
         <div className="space-y-2">
-          {activations.map((act) => (
-            <div key={act.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <code className="text-xs truncate">{act.identifier}</code>
-                  {act.label && <span className="text-muted-foreground text-xs">({act.label})</span>}
-                  <span className="text-xs text-muted-foreground capitalize">{act.identifier_type}</span>
+          {activations.map((act) => {
+            const isOffline = act.identifier_type === "offline"
+            return (
+              <div key={act.id} className="flex items-center justify-between bg-muted/50 rounded px-3 py-2 text-sm">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <code className="text-xs truncate">{act.identifier}</code>
+                    {act.label && <span className="text-muted-foreground text-xs">({act.label})</span>}
+                    <span className="text-xs text-muted-foreground capitalize">{act.identifier_type}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {t("portal.lastVerified")} {formatDate(act.last_verified)}
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  {t("portal.lastVerified")} {formatDate(act.last_verified)}
-                </p>
+                {isOffline ? (
+                  // Offline activations are admin-gated — no self-delete.
+                  <span className="text-xs text-muted-foreground shrink-0 pl-2">{t("portal.offlineAdminOnly")}</span>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0 text-destructive"
+                    disabled={removeMut.isPending && removeMut.variables === act.id}
+                    onClick={() => setRemoving(act)}
+                    aria-label={t("portal.removeDevice")}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0 text-destructive"
-                disabled={removeMut.isPending && removeMut.variables === act.id}
-                onClick={() => setRemoving(act)}
-                aria-label={t("portal.removeDevice")}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          ))}
+            )
+          })}
         </div>
+      )}
+
+      {offlineOpen && (
+        <OfflineActivateDialog
+          licenseKey={license.license_key}
+          productName={license.product?.name || "license"}
+          onClose={() => setOfflineOpen(false)}
+          onDone={() => qc.invalidateQueries({ queryKey: ["portal", "activations", license.id] })}
+        />
       )}
 
       <AlertDialog open={!!removing} onOpenChange={(o) => !o && setRemoving(null)}>
@@ -376,6 +403,117 @@ function ActivationsSection({ license }: { license: License }) {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  )
+}
+
+function OfflineActivateDialog({
+  licenseKey,
+  productName,
+  onClose,
+  onDone,
+}: {
+  licenseKey: string
+  productName: string
+  onClose: () => void
+  onDone: () => void
+}) {
+  const { t } = useI18n()
+  const [identifier, setIdentifier] = useState("")
+  const [label, setLabel] = useState("")
+  const [copied, setCopied] = useState(false)
+  const [result, setResult] = useState<{ token: string; fingerprint: string } | null>(null)
+
+  const issueMut = useMutation({
+    mutationFn: () => portal.issueOfflineToken(licenseKey, identifier.trim(), label.trim()),
+    onSuccess: (data) => {
+      setResult({ token: data.token, fingerprint: data.fingerprint })
+      onDone()
+    },
+  })
+
+  const copyToken = () => {
+    if (!result) return
+    navigator.clipboard.writeText(result.token)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const downloadToken = () => {
+    if (!result) return
+    const slug = productName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "license"
+    const blob = new Blob([result.token], { type: "text/plain" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${slug}.lic`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("portal.offlineActivate")}</DialogTitle>
+          <DialogDescription>{t("portal.offlineDesc")}</DialogDescription>
+        </DialogHeader>
+        {result ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">{t("portal.offlineFingerprint")}:</span>
+              <code className="bg-muted px-2 py-1 rounded text-xs">{result.fingerprint}</code>
+            </div>
+            <div className="space-y-1">
+              <Label>{t("portal.offlineFile")}</Label>
+              <textarea
+                readOnly
+                value={result.token}
+                onFocus={(e) => e.currentTarget.select()}
+                className="w-full h-28 font-mono text-[11px] break-all rounded-md border bg-muted p-2"
+              />
+              <p className="text-xs text-muted-foreground">{t("portal.offlineFileHint")}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={copyToken}>
+                {copied ? <Check className="h-4 w-4 mr-1 text-emerald-600" /> : <Copy className="h-4 w-4 mr-1" />}
+                {t("common.copy")}
+              </Button>
+              <Button size="sm" onClick={downloadToken}>
+                <Download className="h-4 w-4 mr-1" /> {t("portal.offlineDownload")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label>{t("portal.offlineMachineCode")}</Label>
+              <Input
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="e.g. 9F2A-7C31-…"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">{t("portal.offlineMachineCodeHint")}</p>
+            </div>
+            <div className="space-y-1">
+              <Label>{t("portal.offlineLabelOptional")}</Label>
+              <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Shop-floor PC" />
+            </div>
+            {issueMut.isError && (
+              <p className="text-sm text-destructive">{(issueMut.error as Error)?.message || t("common.error")}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={onClose}>
+                {t("common.cancel")}
+              </Button>
+              <Button onClick={() => issueMut.mutate()} disabled={!identifier.trim() || issueMut.isPending}>
+                <FileKey2 className="h-4 w-4 mr-1" /> {t("portal.offlineGenerate")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

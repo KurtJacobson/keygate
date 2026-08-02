@@ -736,6 +736,39 @@ func (s *Store) CountActivations(ctx context.Context, licenseID string) (int, er
 		Where("license_id = ?", licenseID).Count(ctx)
 }
 
+// ErrOfflineActivationExists is returned by InsertOfflineActivation when
+// the license already has its one allowed offline activation.
+var ErrOfflineActivationExists = errors.New("offline activation already exists for this license")
+
+// InsertOfflineActivation records the single self-service offline
+// activation for a license. The activations_one_offline_per_license
+// partial unique index enforces the cap atomically, so a concurrent
+// second insert fails with a unique violation, surfaced here as
+// ErrOfflineActivationExists.
+func (s *Store) InsertOfflineActivation(ctx context.Context, a *model.Activation) error {
+	if a.ID == "" {
+		a.ID = newID()
+	}
+	a.IdentifierType = model.IdentifierTypeOffline
+	if _, err := s.DB.NewInsert().Model(a).Exec(ctx); err != nil {
+		if isUniqueViolation(err) {
+			return ErrOfflineActivationExists
+		}
+		return err
+	}
+	return nil
+}
+
+// FindOfflineActivation returns the license's single offline activation,
+// or sql.ErrNoRows if none exists.
+func (s *Store) FindOfflineActivation(ctx context.Context, licenseID string) (*model.Activation, error) {
+	a := new(model.Activation)
+	err := s.DB.NewSelect().Model(a).
+		Where("license_id = ? AND identifier_type = ?", licenseID, model.IdentifierTypeOffline).
+		Limit(1).Scan(ctx)
+	return a, err
+}
+
 // FindExpiringLicenses returns active licenses that expire between `from` and `to`.
 func (s *Store) FindExpiringLicenses(ctx context.Context, from, to time.Time) ([]*model.License, error) {
 	var out []*model.License

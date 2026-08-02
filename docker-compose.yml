@@ -36,7 +36,10 @@ services:
       POSTGRES_PASSWORD: keygate
       POSTGRES_DB: keygate
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Postgres 18+ wants a single mount at /var/lib/postgresql (it stores
+      # data in a version subdirectory). Mounting the old .../data path makes
+      # the container refuse to start ("unused mount/volume").
+      - pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U keygate"]
       interval: 10s

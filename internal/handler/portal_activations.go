@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/tabloy/keygate/internal/model"
+	"github.com/tabloy/keygate/internal/service"
 	"github.com/tabloy/keygate/internal/store"
 	"github.com/tabloy/keygate/pkg/response"
 )
@@ -28,10 +29,11 @@ import (
 // Without self-service, that's a customer-support ticket every time.
 type PortalActivationsHandler struct {
 	store *store.Store
+	svc   *service.LicenseService
 }
 
-func NewPortalActivationsHandler(s *store.Store) *PortalActivationsHandler {
-	return &PortalActivationsHandler{store: s}
+func NewPortalActivationsHandler(s *store.Store, svc *service.LicenseService) *PortalActivationsHandler {
+	return &PortalActivationsHandler{store: s, svc: svc}
 }
 
 // portalActivationView is the slimmed-down activation row exposed to
@@ -134,15 +136,24 @@ func (h *PortalActivationsHandler) Delete(c *gin.Context) {
 		response.Internal(c)
 		return
 	}
-	belongs := false
+	var target *model.Activation
 	for _, a := range rows {
 		if a.ID == activationID {
-			belongs = true
+			target = a
 			break
 		}
 	}
-	if !belongs {
+	if target == nil {
 		response.NotFound(c, "activation not found")
+		return
+	}
+
+	// Offline (air-gapped) activations are admin-gated: the customer
+	// self-activates one machine, but clearing it to switch machines
+	// requires an admin. Refuse portal-side deletion of them.
+	if target.IdentifierType == model.IdentifierTypeOffline {
+		response.Err(c, 403, "OFFLINE_ADMIN_ONLY",
+			"offline activations can only be cleared by an administrator — contact support")
 		return
 	}
 
@@ -162,6 +173,44 @@ func (h *PortalActivationsHandler) Delete(c *gin.Context) {
 		Changes: map[string]any{"license_id": lic.ID, "via": "self_service"},
 	})
 	response.OK(c, gin.H{"status": "deleted"})
+}
+
+// IssueOfflineToken lets the license owner (or an accepted seat)
+// self-activate a single air-gapped machine and download its license
+// file. Enforces the one-offline-machine cap; switching machines needs
+// an admin to clear the activation (see Delete).
+//
+//	POST /api/v1/portal/licenses/:license_key/offline-token
+func (h *PortalActivationsHandler) IssueOfflineToken(c *gin.Context) {
+	lic, ok := h.resolveOwnedLicense(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Identifier string `json:"identifier"`
+		Label      string `json:"label"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+	req.Identifier = strings.TrimSpace(req.Identifier)
+	if req.Identifier == "" {
+		response.BadRequest(c, "identifier (machine code) is required")
+		return
+	}
+
+	token, fingerprint, err := h.svc.IssueSelfServiceOfflineToken(
+		c.Request.Context(), lic.LicenseKey, req.Identifier, strings.TrimSpace(req.Label), c.ClientIP())
+	if err != nil {
+		writeAppErr(c, err)
+		return
+	}
+	response.OK(c, gin.H{
+		"token":       token,
+		"fingerprint": fingerprint,
+		"identifier":  req.Identifier,
+	})
 }
 
 // maxActivationsForLicense returns the activation cap for a license

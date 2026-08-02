@@ -1,5 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Ban, Check, Copy, Eye, Package, Pause, Pencil, Play, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import {
+  Ban,
+  Check,
+  Copy,
+  Download,
+  Eye,
+  FileKey2,
+  Package,
+  Pause,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+} from "lucide-react"
 import { useState } from "react"
 import { Link } from "react-router-dom"
 import { showToast } from "@/components/toast"
@@ -448,6 +463,7 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const { data: lic, isLoading } = useQuery({ queryKey: ["admin", "license", id], queryFn: () => admin.getLicense(id) })
   const [copied, setCopied] = useState(false)
   const [changingPlan, setChangingPlan] = useState(false)
+  const [issuingOffline, setIssuingOffline] = useState(false)
   // null = not editing; "" = editing with empty value (perpetual)
   const [editingValidUntil, setEditingValidUntil] = useState<string | null>(null)
   // same convention; "" = unlimited support
@@ -777,6 +793,11 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
                   <Button variant="outline" size="sm" onClick={() => setChangingPlan(true)}>
                     {t("licenses.changePlan")}
                   </Button>
+                  {(lic.status === "active" || lic.status === "trialing") && (
+                    <Button variant="outline" size="sm" onClick={() => setIssuingOffline(true)}>
+                      <FileKey2 className="h-4 w-4 mr-1" /> {t("licenses.offlineToken")}
+                    </Button>
+                  )}
                 </div>
 
                 {/* Activations — hidden for SaaS products (which don't
@@ -874,6 +895,13 @@ function LicenseDetail({ id, onClose }: { id: string; onClose: () => void }) {
             productId={lic.product_id}
             currentPlanId={lic.plan_id}
             onClose={() => setChangingPlan(false)}
+          />
+        )}
+        {issuingOffline && lic && (
+          <OfflineTokenDialog
+            licenseId={id}
+            productName={lic.product?.name || "license"}
+            onClose={() => setIssuingOffline(false)}
           />
         )}
         <AlertDialog open={!!confirmDeactivation} onOpenChange={() => setConfirmDeactivation(null)}>
@@ -1103,6 +1131,114 @@ function SeatsTab({ licenseId, maxSeats }: { licenseId: string; maxSeats: number
         </DataTable>
       )}
     </div>
+  )
+}
+
+function OfflineTokenDialog({
+  licenseId,
+  productName,
+  onClose,
+}: {
+  licenseId: string
+  productName: string
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+  const [identifier, setIdentifier] = useState("")
+  const [expiry, setExpiry] = useState("")
+  const [copied, setCopied] = useState(false)
+  const [result, setResult] = useState<{ token: string; fingerprint: string; perpetual: boolean } | null>(null)
+
+  const issueMut = useMutation({
+    mutationFn: () => admin.issueOfflineToken(licenseId, identifier.trim(), expiry ? endOfDayISO(expiry) : ""),
+    onSuccess: (data) => setResult({ token: data.token, fingerprint: data.fingerprint, perpetual: data.perpetual }),
+  })
+
+  const copyToken = () => {
+    if (!result) return
+    navigator.clipboard.writeText(result.token)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  const downloadToken = () => {
+    if (!result) return
+    const slug = productName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "license"
+    const blob = new Blob([result.token], { type: "text/plain" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${slug}.lic`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t("licenses.offlineTitle")}</DialogTitle>
+          <DialogDescription>{t("licenses.offlineDesc")}</DialogDescription>
+        </DialogHeader>
+        {result ? (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">{t("licenses.offlineFingerprint")}:</span>
+              <code className="bg-muted px-2 py-1 rounded text-xs">{result.fingerprint}</code>
+              {result.perpetual && <Badge variant="secondary">{t("licenses.offlinePerpetual")}</Badge>}
+            </div>
+            <div className="space-y-1">
+              <Label>{t("licenses.offlineResult")}</Label>
+              <textarea
+                readOnly
+                value={result.token}
+                onFocus={(e) => e.currentTarget.select()}
+                className="w-full h-28 font-mono text-[11px] break-all rounded-md border bg-muted p-2"
+              />
+              <p className="text-xs text-muted-foreground">{t("licenses.offlineResultHint")}</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={copyToken}>
+                {copied ? <Check className="h-4 w-4 mr-1 text-emerald-600" /> : <Copy className="h-4 w-4 mr-1" />}
+                {t("common.copy")}
+              </Button>
+              <Button size="sm" onClick={downloadToken}>
+                <Download className="h-4 w-4 mr-1" /> {t("licenses.offlineDownload")}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <Label>{t("licenses.offlineMachineCode")}</Label>
+              <Input
+                value={identifier}
+                onChange={(e) => setIdentifier(e.target.value)}
+                placeholder="e.g. 9F2A-7C31-…"
+                autoFocus
+              />
+              <p className="text-xs text-muted-foreground">{t("licenses.offlineMachineCodeHint")}</p>
+            </div>
+            <div className="space-y-1">
+              <Label>{t("licenses.offlineExpiryOptional")}</Label>
+              <Input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+              <p className="text-xs text-muted-foreground">{t("licenses.offlineExpiryHint")}</p>
+            </div>
+            {issueMut.isError && (
+              <p className="text-sm text-destructive">{(issueMut.error as Error)?.message || t("common.error")}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={onClose}>
+                {t("common.cancel")}
+              </Button>
+              <Button onClick={() => issueMut.mutate()} disabled={!identifier.trim() || issueMut.isPending}>
+                <FileKey2 className="h-4 w-4 mr-1" /> {t("licenses.offlineGenerate")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

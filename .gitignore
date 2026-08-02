@@ -46,5 +46,5 @@ tests/
 coverage.html
 seed
 
-# MkDocs build output
-/site/
+# Local Docker Compose override (build from source)
+docker-compose.override.yml
