@@ -19,7 +19,7 @@ offline     →  verify the cached token locally with the Ed25519 public key
 `POST /license/activate` — registers a device or user identifier against a license and returns a signed verification token.
 
 ```json
-{ "license_key": "KG-XXXX-XXXX-XXXX-XXXX", "identifier": "device-a1b2c3", "identifier_type": "device", "label": "Kurt's laptop" }
+{ "license_key": "KG-XXXX-XXXX-XXXX-XXXX", "identifier": "device-a1b2c3", "identifier_type": "device", "label": "Work laptop" }
 ```
 
 - **`identifier`** — a stable per-install fingerprint (device id) or a user email. This is what `verify` later checks against.

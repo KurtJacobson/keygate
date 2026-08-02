@@ -27,6 +27,11 @@ docker compose up -d
 
 Keygate serves on port **9000** by default. Open `http://localhost:9000` (or your domain) to reach the first-run setup wizard.
 
+<!-- Placeholder — replace docs/assets/setup-wizard.png with a real screenshot of the first-run setup wizard. -->
+<figure class="screenshot" markdown="span">
+![First-run setup wizard](../assets/setup-wizard.png)
+</figure>
+
 !!! warning "PostgreSQL 18 volume layout"
     The `postgres:18` image expects its data volume mounted at `/var/lib/postgresql` (not `.../data`). The bundled `docker-compose.yml` already does this. If you adapted an older compose file and see *"there appears to be PostgreSQL data in /var/lib/postgresql/data (unused mount/volume)"*, fix the mount path.
 

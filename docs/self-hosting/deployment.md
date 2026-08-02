@@ -15,7 +15,7 @@ Keygate is lightweight — a Go binary plus PostgreSQL. A **1 GB / 1 vCPU** VPS 
 
 ```bash
 apt update && apt upgrade -y
-adduser kurt && usermod -aG sudo kurt
+adduser deploy && usermod -aG sudo deploy
 apt install -y ufw
 ufw allow OpenSSH && ufw allow 80/tcp && ufw allow 443/tcp && ufw enable
 apt install -y unattended-upgrades
@@ -25,7 +25,7 @@ apt install -y unattended-upgrades
 
 ```bash
 curl -fsSL https://get.docker.com | sh
-usermod -aG docker kurt
+usermod -aG docker deploy
 fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```

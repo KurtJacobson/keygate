@@ -4,6 +4,17 @@ Notable changes in this fork of Keygate, newest first. Versions before
 0.1.2 are inherited from upstream Keygate; the entries below cover what
 this fork adds on top.
 
+## 0.1.5 — UI polish & developer experience
+
+**Changed**
+
+- **Entitlement editor adapts to the value type.** The *Value* field in the plan and add-on entitlement dialogs now matches the selected type — an Enabled/Disabled toggle for booleans, number inputs for integers and quotas, and a text input for strings. Quotas are labelled **Limit** with a *0 = unlimited* hint, and switching the type resets the value instead of leaving a stray `true`.
+- **Softer theme.** Restored a light default border color (Tailwind v4 had defaulted bare borders to near-black) so cards, tables, and inputs use subtle separators; cards now use a soft shadow for a cleaner, elevated look.
+
+**Added**
+
+- **Demo-data seeder** (`cmd/seed`, `make seed`): populates a local database with sample products, plans (entitlements across every value type), and licenses for quick manual testing. Idempotent.
+
 ## 0.1.4 — Offline & air-gapped licensing
 
 **Added**

@@ -19,6 +19,11 @@ The license keeps verifying and running past `support_until`. What lapses is acc
 | At issuance | Pass `support_until` (RFC 3339) when creating a license, overriding the plan default. |
 | Per-license, later | `POST /admin/licenses/{id}/support-until` with `{ "support_until": "2027-01-01T00:00:00Z" }`. An empty value clears it (unlimited). |
 
+<!-- Placeholder — replace docs/assets/support-window.png with a real screenshot of the license detail showing the support window / "Perpetual" fields. -->
+<figure class="screenshot" markdown="span">
+![Support window on a license in the admin dashboard](../assets/support-window.png)
+</figure>
+
 Setting `support_until` never changes the license `status` — support lapse is deliberately **not** a lifecycle event. Reinstating an expired license stays a separate, explicit action.
 
 ## Enforcement: perpetual fallback on downloads

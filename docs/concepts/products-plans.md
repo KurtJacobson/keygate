@@ -28,6 +28,11 @@ Other product fields:
 
 ## Plans
 
+<!-- Placeholder — replace docs/assets/plans-list.png with a real screenshot of the admin Plans list. -->
+<figure class="screenshot" markdown="span">
+![Plans list in the admin dashboard](../assets/plans-list.png)
+</figure>
+
 A plan is a purchasable tier. Its key fields:
 
 | Field | Meaning |
@@ -59,8 +64,15 @@ For a **quota** entitlement, additional fields apply:
 - **`quota_period`** — `hourly`, `daily`, `monthly`, or `yearly`. Counters reset automatically at the period boundary (UTC-based).
 - **`quota_unit`** — a display label only (e.g. `exports`). **Not** the limit.
 
-!!! warning "Quota limit goes in `value`, not `quota_unit`"
-    A common mistake: putting the number in `quota_unit` and `true` in `value`. Keygate parses the limit from `value`. A non-numeric `value` parses to `0`, and a `0` limit is treated as **unlimited** — so the cap silently never fires. For a 20/day cap, set `value_type: quota`, `value: 20`, `quota_period: daily`.
+In the **admin dashboard** the *Value* field adapts to the chosen type — an Enabled/Disabled toggle for `bool`, a number field for `int`, and a numeric **Limit** field (with a *0 = unlimited* hint) for `quota` — so the value is entered correctly without guesswork.
+
+<!-- Placeholder — replace docs/assets/entitlement-editor.png with a real screenshot of the entitlement editor dialog (quota selected). -->
+<figure class="screenshot" markdown="span">
+![Entitlement editor with the Value field adapted to a quota Limit](../assets/entitlement-editor.png)
+</figure>
+
+!!! warning "Quota limit goes in `value`, not `quota_unit` (API)"
+    When creating entitlements directly via the **admin API**, put the numeric limit in `value` — not in `quota_unit`, and never leave it as `true`. Keygate parses the limit from `value`; a non-numeric `value` parses to `0`, and a `0` limit is treated as **unlimited**, so the cap silently never fires. For a 20/day cap: `value_type: quota`, `value: 20`, `quota_period: daily`. (The dashboard's typed Value field prevents this — the warning applies to raw API use.)
 
 Entitlements are returned to clients in the verify/activate response (`features` map) and embedded in the [offline token](../integration/offline-tokens.md). Quota entitlements are enforced by the [usage metering](../integration/sdk.md#usage-metering) endpoints.
 

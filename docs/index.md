@@ -2,6 +2,11 @@
 
 **Self-hosted software license management.** Keygate is a single Go binary plus PostgreSQL that handles the full lifecycle of software licensing — key issuance, device activation, offline verification, usage quotas, software update distribution, team seats, and Stripe billing — all behind one admin dashboard, running on your own infrastructure.
 
+<!-- Placeholder — replace docs/assets/dashboard.png with a real screenshot of the admin dashboard. -->
+<figure class="screenshot" markdown="span">
+![Keygate admin dashboard](assets/dashboard.png)
+</figure>
+
 !!! info "What this documentation covers"
     Installing and configuring Keygate, the concepts behind products/plans/licenses, integrating a client application against the SDK, wiring up Stripe, distributing signed updates, and operating a self-hosted deployment. If you just want to run it, start with **[Installation](getting-started/installation.md)**.
 

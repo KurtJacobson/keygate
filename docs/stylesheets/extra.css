@@ -1,0 +1,49 @@
+/* Plain content images: soft rounded corners + a subtle border. */
+.md-typeset img {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 6px;
+}
+
+/* Screenshots: wrap in a faux app-window frame with a titlebar and
+   macOS-style traffic-light dots, so they clearly read as screenshots
+   rather than blending into the page. Works in light and dark themes. */
+.md-typeset figure.screenshot {
+  margin: 1.4em 0;
+  border: 1px solid var(--md-default-fg-color--lighter);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+  background: var(--md-default-bg-color);
+}
+
+/* The titlebar strip + three traffic-light dots (drawn as gradients). */
+.md-typeset figure.screenshot::before {
+  content: "";
+  display: block;
+  height: 34px;
+  background-color: var(--md-default-fg-color--lightest);
+  border-bottom: 1px solid var(--md-default-fg-color--lighter);
+  background-image:
+    radial-gradient(circle 6px at 22px 17px, #ff5f57 98%, transparent 100%),
+    radial-gradient(circle 6px at 44px 17px, #febc2e 98%, transparent 100%),
+    radial-gradient(circle 6px at 66px 17px, #28c840 98%, transparent 100%);
+  background-repeat: no-repeat;
+}
+
+/* The screenshot itself fills the frame edge-to-edge, no own border. */
+.md-typeset figure.screenshot img {
+  display: block;
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Optional caption under the frame. */
+.md-typeset figure.screenshot figcaption {
+  margin: 0;
+  padding: 0.5em 0.75em;
+  font-size: 0.75rem;
+  color: var(--md-default-fg-color--light);
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+}

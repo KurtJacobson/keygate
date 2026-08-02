@@ -31,6 +31,11 @@ Open a license → **Offline license**. Enter the customer's machine code, leave
 
 The button appears only for `active` / `trialing` licenses.
 
+<!-- Placeholder — replace docs/assets/offline-admin-dialog.png with a real screenshot of the admin "Offline license" dialog. -->
+<figure class="screenshot" markdown="span">
+![Admin Offline license dialog](../assets/offline-admin-dialog.png)
+</figure>
+
 ### From the API
 
 ```http
@@ -56,6 +61,17 @@ Response:
 ```
 
 Deliver the `token` string to the customer as a file (e.g. `yourproduct.lic`). The `fingerprint` is included for support reference — it also lives inside the token as `fpr`.
+
+### Self-service from the customer portal
+
+Customers can activate their own air-gapped machine without contacting you. In the portal, a license owner (or accepted seat) opens the license and chooses **Activate offline device**, enters the machine code, and downloads the `.lic` file — all from an internet-connected device, then sneakernets the file to the offline machine.
+
+A license allows **one** self-service offline activation. Switching to a different machine requires an admin to clear the existing offline activation (the portal deliberately won't let the customer self-clear it) — so you keep a gate on machine moves. The option is hidden for SaaS products, which don't use device activation.
+
+<!-- Placeholder — replace docs/assets/portal-offline-activate.png with a real screenshot of the portal "Activate offline device" dialog. -->
+<figure class="screenshot" markdown="span">
+![Portal Activate offline device dialog](../assets/portal-offline-activate.png)
+</figure>
 
 ## The machine code
 
