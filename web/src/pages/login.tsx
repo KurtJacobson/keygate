@@ -142,6 +142,12 @@ export default function LoginPage() {
           {otpStep === "code" && (
             <form onSubmit={handleOtpVerify} className="space-y-3">
               <p className="text-sm text-muted-foreground text-center">{t("login.codeSentTo", { email: otpEmail })}</p>
+              {/* Deliberately conditional wording ("if registered"): the
+                  backend responds identically for unknown emails (see
+                  OTP_REQUIRE_EXISTING_USER) so the login form can't be
+                  used to enumerate accounts. The support hint is shown
+                  unconditionally for the same reason. */}
+              <p className="text-xs text-muted-foreground text-center">{t("login.noAccountHint")}</p>
               <div className="space-y-2">
                 <Input
                   type="text"

@@ -54,6 +54,14 @@ type Config struct {
 
 	AdminEmails []string
 
+	// OTPRequireExistingUser closes open signup on the OTP login flow.
+	// When true, /auth/otp/send only emails a code if the address already
+	// belongs to a user (or is listed in ADMIN_EMAILS for bootstrap).
+	// Unknown emails still get a "sent" response so the endpoint can't be
+	// used to enumerate accounts, but no email is sent and no code is
+	// created. Default false — new customers can self-register by logging in.
+	OTPRequireExistingUser bool
+
 	// ─── Storage (release artifacts: R2 / S3 / S3-compatible) ───
 	// All fields are optional. The storage subsystem is enabled iff
 	// StorageBucket is non-empty and credentials are present. When disabled,
@@ -134,6 +142,9 @@ func Load() (*Config, error) {
 			cfg.AdminEmails = append(cfg.AdminEmails, strings.TrimSpace(e))
 		}
 	}
+
+	cfg.OTPRequireExistingUser = strings.EqualFold(os.Getenv("OTP_REQUIRE_EXISTING_USER"), "true") ||
+		os.Getenv("OTP_REQUIRE_EXISTING_USER") == "1"
 
 	cfg.StorageEndpoint = os.Getenv("STORAGE_ENDPOINT")
 	cfg.StorageRegion = envOr("STORAGE_REGION", "auto")

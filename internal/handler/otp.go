@@ -4,6 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
+	"errors"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -37,6 +39,23 @@ func (h *AuthHandler) OTPSend(c *gin.Context) {
 	if count >= 3 {
 		response.Err(c, 429, "RATE_LIMITED", "too many code requests, try again later")
 		return
+	}
+
+	// Signup gate: with OTP_REQUIRE_EXISTING_USER set, codes only go to
+	// addresses that already have an account (ADMIN_EMAILS bypass covers
+	// first-admin bootstrap). Unknown emails get the same "sent" response
+	// with no code created, so the endpoint can't confirm which addresses
+	// have accounts — and can't be used to spam arbitrary inboxes.
+	if h.Config.OTPRequireExistingUser && !h.Config.IsAdminEmail(email) {
+		if _, err := h.Store.FindUserByEmail(c, email); err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				response.Internal(c)
+				return
+			}
+			slog.Info("OTP requested for unknown email — not sent (OTP_REQUIRE_EXISTING_USER)", "email", email)
+			response.OK(c, gin.H{"status": "sent"})
+			return
+		}
 	}
 
 	code := generateOTPCode()

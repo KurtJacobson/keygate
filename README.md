@@ -13,7 +13,7 @@ A single Go binary + PostgreSQL that handles license keys, activation, payments,
 
 - **License management** — subscriptions, perpetual, trials, floating (concurrent), and perpetual + paid-support licenses. Activate, verify, suspend, revoke with full audit trail and atomic activation limits.
 - **Offline verification** — Ed25519-signed tokens; public SDK endpoints take the license key directly, so no API keys are embedded in your binaries.
-- **Perpetual + paid support** — gate updates on a support window that renews independently of the license, with self-serve Stripe renewal.
+- **Perpetual + paid support** ("perpetual fallback" / JetBrains-style) — the license never expires, but a separate support window gates access to newer releases. Lapsed customers keep every release published while their support was active and renew (self-serve via Stripe) to get newer ones.
 - **Software distribution** — signed release feeds for Sparkle (macOS), Velopack (Windows), and Tauri; S3-compatible storage; license-gated downloads.
 - **Usage metering** — track any metric with atomic, database-level quota enforcement and threshold webhooks.
 - **Payments** — end-to-end Stripe integration: checkout, proration, dunning, refunds, billing portal.
