@@ -50,7 +50,7 @@ Endpoints: `POST /license/floating/checkout`, `/floating/heartbeat`, `/floating/
 
 ## 5. Perpetual + paid support
 
-A perpetual license (never expires) plus a separate, time-boxed **support window** that gates updates — the JetBrains model. The license keeps working forever, but access to *new releases* stops when support lapses, and the customer renews to receive newer versions.
+A perpetual license (never expires) plus a separate, time-boxed **support window** that gates updates — the JetBrains model, also known as **perpetual fallback**. The license keeps working forever, but access to *new releases* stops when support lapses; the customer keeps every version published while their support was active (the "fallback") and renews to receive newer ones.
 
 This is powerful enough to have its own page: **[The Support Window](support-window.md)**.
 
