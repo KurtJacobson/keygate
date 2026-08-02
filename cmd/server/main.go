@@ -798,9 +798,10 @@ func main() {
 
 		// Self-service activation management — solves the "I lost my
 		// laptop, my activation slot is stuck" support ticket.
-		portalActH := handler.NewPortalActivationsHandler(db)
+		portalActH := handler.NewPortalActivationsHandler(db, licenseSvc)
 		portal.GET("/licenses/:license_key/activations", portalActH.List)
 		portal.DELETE("/licenses/:license_key/activations/:activation_id", portalActH.Delete)
+		portal.POST("/licenses/:license_key/offline-token", portalActH.IssueOfflineToken)
 
 		// Subscription self-service. The handlers already verify
 		// email ownership of the target license against the session

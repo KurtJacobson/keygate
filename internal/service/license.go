@@ -557,7 +557,14 @@ func (s *LicenseService) IssueOfflineToken(ctx context.Context, licenseID, ident
 		return "", "", apperr.New(409, "LICENSE_NOT_ISSUABLE",
 			"license must be active or trialing to issue an offline token")
 	}
+	return s.buildOfflineToken(lic, identifier, expiresAt)
+}
 
+// buildOfflineToken constructs and signs a machine-bound offline token
+// for lic. expiresAt nil => perpetual (exp=0, which Verify treats as
+// never-expiring). Shared by the admin (IssueOfflineToken) and
+// self-service (IssueSelfServiceOfflineToken) issuance paths.
+func (s *LicenseService) buildOfflineToken(lic *model.License, identifier string, expiresAt *time.Time) (token, fingerprint string, err error) {
 	now := time.Now()
 	fpr := license.Fingerprint(identifier, lic.ProductID)
 	t := &license.VerifyToken{
@@ -582,4 +589,65 @@ func (s *LicenseService) IssueOfflineToken(ctx context.Context, licenseID, ident
 		return "", "", err
 	}
 	return signed, fpr, nil
+}
+
+// IssueSelfServiceOfflineToken lets a license owner (or accepted seat)
+// self-activate a single air-gapped machine from the portal. It records
+// the one allowed offline activation (enforced atomically by the
+// activations_one_offline_per_license partial unique index) and returns
+// a perpetual, machine-bound token. Switching to a different machine
+// requires an admin to clear the activation — the portal refuses to
+// self-delete offline activations.
+func (s *LicenseService) IssueSelfServiceOfflineToken(ctx context.Context, licenseKey, identifier, label, ip string) (token, fingerprint string, err error) {
+	if identifier == "" {
+		return "", "", apperr.New(400, "IDENTIFIER_REQUIRED", "machine code is required")
+	}
+	lic, err := s.store.FindLicenseByKey(ctx, licenseKey)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", "", apperr.New(404, "LICENSE_NOT_FOUND", "license not found")
+		}
+		return "", "", apperr.Internal(err)
+	}
+	if err := requireProductCapability(lic.Product, model.CapActivations, "device activation"); err != nil {
+		return "", "", err
+	}
+	if err := s.assertUsable(lic); err != nil {
+		return "", "", err
+	}
+
+	act := &model.Activation{
+		LicenseID:  lic.ID,
+		Identifier: identifier,
+		Label:      label,
+		IPAddress:  ip,
+	}
+	if err := s.store.InsertOfflineActivation(ctx, act); err != nil {
+		if errors.Is(err, store.ErrOfflineActivationExists) {
+			details := map[string]any{}
+			if existing, e := s.store.FindOfflineActivation(ctx, lic.ID); e == nil {
+				details["identifier"] = existing.Identifier
+			}
+			return "", "", apperr.WithDetails(
+				apperr.Conflict("OFFLINE_ALREADY_ACTIVATED",
+					"an offline machine is already activated; ask support to clear it before activating a different one"),
+				details,
+			)
+		}
+		return "", "", apperr.Internal(err)
+	}
+
+	s.store.Audit(ctx, &model.AuditLog{
+		Entity: "license", EntityID: lic.ID, Action: "offline_activated",
+		ActorType: "portal", IPAddress: ip,
+		Changes: map[string]any{"identifier": identifier, "label": label},
+	})
+	if s.webhook != nil {
+		s.webhook.Dispatch(ctx, lic.ProductID, "license.activated", map[string]any{
+			"license_id": lic.ID, "identifier": identifier, "type": model.IdentifierTypeOffline,
+		})
+	}
+
+	// Perpetual, machine-bound token; the admin-gated reset is the control.
+	return s.buildOfflineToken(lic, identifier, nil)
 }
