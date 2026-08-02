@@ -128,6 +128,12 @@ export const portal = {
     del<{ status: string }>(
       `/portal/licenses/${encodeURIComponent(licenseKey)}/activations/${encodeURIComponent(activationId)}`,
     ),
+  // Self-activate one air-gapped machine; returns a perpetual license file.
+  issueOfflineToken: (licenseKey: string, identifier: string, label?: string) =>
+    post<{ token: string; fingerprint: string; identifier: string }>(
+      `/portal/licenses/${encodeURIComponent(licenseKey)}/offline-token`,
+      { identifier, label: label ?? "" },
+    ),
   listSeats: (licenseKey: string) => post<{ seats: Seat[] }>("/portal/seats", { license_key: licenseKey }),
   addSeat: (data: { license_key: string; email: string; role?: string }) => post<Seat>("/portal/seats/add", data),
   removeSeat: (data: { license_key: string; seat_id: string }) =>
