@@ -674,7 +674,12 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
             </div>
             <div className="space-y-2">
               <Label className="text-xs">{t("plans.valueType")}</Label>
-              <Select value={newEnt.value_type} onValueChange={(v) => setNewEnt((n) => ({ ...n, value_type: v }))}>
+              <Select
+                value={newEnt.value_type}
+                // Reset the value to a sensible default for the new type so
+                // int/string/quota don't inherit the boolean "true".
+                onValueChange={(v) => setNewEnt((n) => ({ ...n, value_type: v, value: v === "bool" ? "true" : "" }))}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -687,12 +692,32 @@ function EntitlementSection({ planId, entitlements: initial }: { planId: string;
               </Select>
             </div>
             <div className="space-y-2">
-              <Label className="text-xs">{t("plans.value")}</Label>
-              <Input
-                value={newEnt.value}
-                onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
-                placeholder="e.g. true, 100"
-              />
+              <Label className="text-xs">
+                {newEnt.value_type === "quota" ? t("plans.quotaLimit") : t("plans.value")}
+              </Label>
+              {newEnt.value_type === "bool" ? (
+                <Select value={newEnt.value} onValueChange={(v) => setNewEnt((n) => ({ ...n, value: v }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="true">{t("plans.enabled")}</SelectItem>
+                    <SelectItem value="false">{t("plans.disabled")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  type={newEnt.value_type === "string" ? "text" : "number"}
+                  value={newEnt.value}
+                  onChange={(e) => setNewEnt((n) => ({ ...n, value: e.target.value }))}
+                  placeholder={
+                    newEnt.value_type === "string" ? "e.g. pro" : newEnt.value_type === "quota" ? "e.g. 1000" : "e.g. 100"
+                  }
+                />
+              )}
+              {newEnt.value_type === "quota" && (
+                <p className="text-[10px] text-muted-foreground">{t("plans.quotaLimitHint")}</p>
+              )}
             </div>
             {newEnt.value_type === "quota" && (
               <>

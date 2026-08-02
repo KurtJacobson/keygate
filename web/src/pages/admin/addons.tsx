@@ -301,7 +301,12 @@ function AddonDialog({
             </div>
             <div className="space-y-2">
               <Label>{t("plans.valueType")}</Label>
-              <Select value={form.value_type} onValueChange={(v) => set("value_type", v)}>
+              <Select
+                value={form.value_type}
+                // Reset the value to a sensible default for the new type so
+                // int/string/quota don't inherit the boolean "true".
+                onValueChange={(v) => setForm((f) => ({ ...f, value_type: v, value: v === "bool" ? "true" : "" }))}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -314,8 +319,31 @@ function AddonDialog({
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>{t("plans.value")}</Label>
-              <Input value={form.value} onChange={(e) => set("value", e.target.value)} required />
+              <Label>{form.value_type === "quota" ? t("plans.quotaLimit") : t("plans.value")}</Label>
+              {form.value_type === "bool" ? (
+                <Select value={form.value} onValueChange={(v) => set("value", v)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="true">{t("plans.enabled")}</SelectItem>
+                    <SelectItem value="false">{t("plans.disabled")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input
+                  type={form.value_type === "string" ? "text" : "number"}
+                  value={form.value}
+                  onChange={(e) => set("value", e.target.value)}
+                  placeholder={
+                    form.value_type === "string" ? "e.g. pro" : form.value_type === "quota" ? "e.g. 1000" : "e.g. 100"
+                  }
+                  required
+                />
+              )}
+              {form.value_type === "quota" && (
+                <p className="text-[10px] text-muted-foreground">{t("plans.quotaLimitHint")}</p>
+              )}
             </div>
             {form.value_type === "quota" && (
               <>
