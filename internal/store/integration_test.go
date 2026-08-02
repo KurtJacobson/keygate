@@ -58,6 +58,44 @@ func createTestLicense(t *testing.T, s *store.Store, ctx context.Context) *model
 	return lic
 }
 
+func TestInsertOfflineActivation_OnePerLicense(t *testing.T) {
+	s := setupTestDB(t)
+	defer s.Close()
+	ctx := context.Background()
+
+	lic := createTestLicense(t, s, ctx)
+
+	// First offline activation succeeds.
+	first := &model.Activation{LicenseID: lic.ID, Identifier: "machine-A"}
+	if err := s.InsertOfflineActivation(ctx, first); err != nil {
+		t.Fatalf("first offline activation should succeed: %v", err)
+	}
+
+	// A second, different offline machine is rejected by the partial
+	// unique index → ErrOfflineActivationExists.
+	second := &model.Activation{LicenseID: lic.ID, Identifier: "machine-B"}
+	if err := s.InsertOfflineActivation(ctx, second); err != store.ErrOfflineActivationExists {
+		t.Fatalf("second offline activation should be rejected with ErrOfflineActivationExists, got: %v", err)
+	}
+
+	// The existing one is discoverable (for the 409 details / admin view).
+	existing, err := s.FindOfflineActivation(ctx, lic.ID)
+	if err != nil {
+		t.Fatalf("FindOfflineActivation: %v", err)
+	}
+	if existing.Identifier != "machine-A" {
+		t.Errorf("expected machine-A, got %q", existing.Identifier)
+	}
+
+	// After an admin clears it, a new offline machine can be activated.
+	if err := s.DeleteActivationByID(ctx, first.ID); err != nil {
+		t.Fatalf("clear activation: %v", err)
+	}
+	if err := s.InsertOfflineActivation(ctx, &model.Activation{LicenseID: lic.ID, Identifier: "machine-B"}); err != nil {
+		t.Fatalf("offline activation after clear should succeed: %v", err)
+	}
+}
+
 func TestIncrementUsageCounterWithLimit_Atomic(t *testing.T) {
 	s := setupTestDB(t)
 	defer s.Close()

@@ -28,10 +28,11 @@ type AdminHandler struct {
 	Email   *service.EmailService
 	Expiry  *service.ExpiryChecker
 	Metered *service.MeteredBillingSyncer
+	License *service.LicenseService
 }
 
-func NewAdminHandler(s *store.Store, wh *service.WebhookService, em *service.EmailService, ex *service.ExpiryChecker, ms *service.MeteredBillingSyncer) *AdminHandler {
-	return &AdminHandler{Store: s, Webhook: wh, Email: em, Expiry: ex, Metered: ms}
+func NewAdminHandler(s *store.Store, wh *service.WebhookService, em *service.EmailService, ex *service.ExpiryChecker, ms *service.MeteredBillingSyncer, ls *service.LicenseService) *AdminHandler {
+	return &AdminHandler{Store: s, Webhook: wh, Email: em, Expiry: ex, Metered: ms, License: ls}
 }
 
 // ─── Stats ───
@@ -1230,6 +1231,60 @@ func (h *AdminHandler) SetLicenseSupportUntil(c *gin.Context) {
 		Changes: map[string]any{"support_until": req.SupportUntil},
 	})
 	response.OK(c, lic)
+}
+
+// IssueOfflineToken mints a machine-bound license token for an
+// air-gapped device that will never reach the server. The admin
+// supplies the device's machine code (obtained out-of-band); the token
+// is returned for delivery as a file and verified entirely offline. An
+// empty expires_at issues a perpetual token (the default for air-gapped
+// installs) — see the offline-licensing docs for the trade-offs.
+func (h *AdminHandler) IssueOfflineToken(c *gin.Context) {
+	id := c.Param("id")
+	if !h.checkLicenseScope(c, id) {
+		return
+	}
+	var req struct {
+		Identifier string `json:"identifier"`
+		ExpiresAt  string `json:"expires_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "invalid request body")
+		return
+	}
+	req.Identifier = strings.TrimSpace(req.Identifier)
+	if req.Identifier == "" {
+		response.BadRequest(c, "identifier (machine code) is required")
+		return
+	}
+
+	var expiresAt *time.Time
+	if req.ExpiresAt != "" {
+		ts, err := time.Parse(time.RFC3339, req.ExpiresAt)
+		if err != nil {
+			response.BadRequest(c, "expires_at must be an RFC 3339 timestamp or empty (perpetual)")
+			return
+		}
+		expiresAt = &ts
+	}
+
+	token, fingerprint, err := h.License.IssueOfflineToken(c, id, req.Identifier, expiresAt)
+	if err != nil {
+		writeAppErr(c, err)
+		return
+	}
+
+	h.Store.Audit(c, &model.AuditLog{
+		Entity: "license", EntityID: id, Action: "offline_token_issued",
+		ActorType: "admin", ActorID: adminID(c),
+		Changes: map[string]any{"identifier": req.Identifier, "expires_at": req.ExpiresAt},
+	})
+	response.OK(c, gin.H{
+		"token":       token,
+		"fingerprint": fingerprint,
+		"perpetual":   expiresAt == nil,
+		"expires_at":  req.ExpiresAt,
+	})
 }
 
 func (h *AdminHandler) DeleteActivation(c *gin.Context) {

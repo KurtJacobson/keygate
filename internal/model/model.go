@@ -341,6 +341,12 @@ const (
 	StatusRevoked   = "revoked"
 )
 
+// IdentifierTypeOffline marks a self-service offline (air-gapped)
+// activation. These are capped at one per license (partial unique
+// index) and can only be cleared by an admin — the portal refuses to
+// self-delete them.
+const IdentifierTypeOffline = "offline"
+
 // ─── Activation ───
 
 type Activation struct {

@@ -271,6 +271,47 @@ func TestVerify_ExpiryBoundary(t *testing.T) {
 	}
 }
 
+// TestVerify_PerpetualNeverExpires — a token with ExpiresAt == 0 is
+// the perpetual offline-license case (air-gapped installs). Verify must
+// treat it as never-expiring regardless of the current clock, and the
+// round-trip must preserve the machine binding (fingerprint) and
+// features the offline client gates on. This is the core guarantee
+// behind LicenseService.IssueOfflineToken.
+func TestVerify_PerpetualNeverExpires(t *testing.T) {
+	priv := testKey(t)
+	pub := PublicKey(priv)
+
+	fpr := Fingerprint("machine-code-xyz", "prod-456")
+	tok := &VerifyToken{
+		LicenseID:   "lic-123",
+		ProductID:   "prod-456",
+		Status:      "active",
+		Identifier:  "machine-code-xyz",
+		Features:    map[string]any{"batch_export": true},
+		IssuedAt:    1700000000,
+		ExpiresAt:   0, // perpetual — never expires
+		Fingerprint: fpr,
+	}
+
+	signed, err := Sign(tok, priv)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	parsed, err := Verify(signed, pub)
+	if err != nil {
+		t.Fatalf("perpetual token (exp=0) should verify, got: %v", err)
+	}
+	if parsed.ExpiresAt != 0 {
+		t.Errorf("ExpiresAt should round-trip as 0, got %d", parsed.ExpiresAt)
+	}
+	if parsed.Fingerprint != fpr {
+		t.Errorf("fingerprint mismatch: %s != %s", parsed.Fingerprint, fpr)
+	}
+	if parsed.Features["batch_export"] != true {
+		t.Error("feature batch_export should survive the round-trip")
+	}
+}
+
 func TestFingerprint(t *testing.T) {
 	fp1 := Fingerprint("device-abc", "prod-456")
 	fp2 := Fingerprint("device-abc", "prod-456")

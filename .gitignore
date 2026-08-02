@@ -45,3 +45,6 @@ tests/
 *.out
 coverage.html
 seed
+
+# Local Docker Compose override (build from source)
+docker-compose.override.yml
