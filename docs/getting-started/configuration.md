@@ -20,7 +20,7 @@ Keygate is configured entirely through environment variables (read from the proc
 | `ADMIN_EMAILS` | — | Comma-separated emails auto-promoted to admin on login. Bootstraps the first admin and bypasses the OTP existing-user gate. |
 
 !!! danger "`ENVIRONMENT=production` matters"
-    In `development`, Keygate enables **dev-login** (log in as any email with no OTP), omits the `Secure` flag on session cookies, loosens CORS, and runs Gin in debug mode. Running a public server in `development` is a serious hole. Always set `ENVIRONMENT=production` for anything internet-facing. (Dev-login has a second guard: it 404s unless `BASE_URL` contains `localhost`.)
+    In `development`, Keygate enables **dev-login** (log in as any email with no OTP), omits the `Secure` flag on session cookies, loosens CORS, and runs Gin in debug mode. Running a public server in `development` is a serious hole. Always set `ENVIRONMENT=production` for anything internet-facing. (Dev-login has a second guard: it 404s unless `BASE_URL` contains `localhost`.) Note that CORS is locked to `BASE_URL` in every mode — see [Set `BASE_URL` — it defines the CORS allow-list](../self-hosting/security.md#set-base_url-it-defines-the-cors-allow-list).
 
 ## Authentication
 

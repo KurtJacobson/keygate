@@ -40,6 +40,12 @@ curl -X POST https://<base-url>/api/v1/auth/dev-login -H "Content-Type: applicat
 
 By default anyone can request an OTP for any email (self-signup). Set `OTP_REQUIRE_EXISTING_USER=true` so codes only go to existing accounts (admins bypass). Unknown emails still get an identical "sent" response, so the endpoint can't be used to enumerate accounts.
 
+### Set `BASE_URL` — it defines the CORS allow-list
+
+The dashboard API only returns CORS headers to an origin that **exactly matches `BASE_URL`** (plus `localhost`/`127.0.0.1` origins outside `production`, for local dev). Any other origin gets no CORS headers and its preflight is rejected with `403`. So a correct `BASE_URL` is what stops other websites from making credentialed API calls with a logged-in admin's cookies.
+
+This applies in `staging` too, not just `production` — don't leave `BASE_URL` unset on an internet-reachable non-production box.
+
 ### Protect secrets
 
 - Keep `.env` `chmod 600`, never in git.
