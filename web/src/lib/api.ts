@@ -211,6 +211,13 @@ export const admin = {
   // Empty support_until clears the window (unlimited support).
   setLicenseSupportUntil: (id: string, supportUntil: string) =>
     post<License>(`/admin/licenses/${id}/support-until`, { support_until: supportUntil }),
+  // Mint a machine-bound offline license token for an air-gapped device.
+  // Empty expiresAt issues a perpetual token.
+  issueOfflineToken: (id: string, identifier: string, expiresAt?: string) =>
+    post<{ token: string; fingerprint: string; perpetual: boolean; expires_at: string }>(
+      `/admin/licenses/${id}/offline-token`,
+      { identifier, expires_at: expiresAt ?? "" },
+    ),
   revokeLicense: (id: string) => post(`/admin/licenses/${id}/revoke`),
   suspendLicense: (id: string) => post(`/admin/licenses/${id}/suspend`),
   reinstateLicense: (id: string) => post(`/admin/licenses/${id}/reinstate`),

@@ -11,6 +11,8 @@ const en = {
   "common.noData": "No data",
   "common.confirm": "Confirm",
   "common.optional": "optional",
+  "common.copy": "Copy",
+  "common.error": "Something went wrong",
 
   // Accept-invite landing page
   "acceptInvite.processing": "Accepting your invitation…",
@@ -138,6 +140,22 @@ const en = {
     "End of the paid support/updates window. Leave empty to use the plan's support days (or unlimited). The license itself never expires with this.",
   "licenses.supportUntilEdit": "Edit support window",
   "licenses.supportUntilClear": "Leave empty for unlimited support/updates.",
+  "licenses.offlineToken": "Offline license",
+  "licenses.offlineTitle": "Issue offline license",
+  "licenses.offlineDesc":
+    "Generate a machine-bound license file for an air-gapped device that never connects to the internet.",
+  "licenses.offlineMachineCode": "Machine code",
+  "licenses.offlineMachineCodeHint":
+    "The device's machine code, read from the app. The license file is bound to it and won't work on any other machine.",
+  "licenses.offlineExpiryOptional": "Expiry (optional)",
+  "licenses.offlineExpiryHint":
+    "Leave empty for a perpetual license file. Set a date to require re-issuing on renewal.",
+  "licenses.offlineGenerate": "Generate license file",
+  "licenses.offlineResult": "License file",
+  "licenses.offlineResultHint": "Send this file to the customer to install on the air-gapped machine.",
+  "licenses.offlineFingerprint": "Fingerprint",
+  "licenses.offlinePerpetual": "Perpetual",
+  "licenses.offlineDownload": "Download .lic",
   "licenses.empty": "No licenses found",
   "licenses.noProducts": "No products yet",
   "licenses.noProductsDesc": "Create a product and plan first before issuing licenses.",
