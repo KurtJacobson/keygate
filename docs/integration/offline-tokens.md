@@ -27,7 +27,7 @@ The signed bytes are the **base64url-encoded payload string** (not the raw JSON)
 | `did` | The activated identifier (device/user) |
 | `ftr` | Features map (entitlements) |
 | `iat` | Issued-at (unix seconds) |
-| `exp` | Token expiry (unix seconds) — tokens are short-lived (~7 days) |
+| `exp` | Token expiry (unix seconds) — online tokens are short-lived (~7 days); `0` = never expires (see [Air-gapped Licensing](air-gapped.md)) |
 | `grc` | Grace days for the plan |
 | `sup` | Support-window end (unix seconds; `0`/absent = unlimited) |
 | `nce` | Per-issuance nonce (replay protection) |

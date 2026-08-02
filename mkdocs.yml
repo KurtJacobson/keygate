@@ -65,6 +65,7 @@ nav:
   - Client Integration:
       - SDK & Public Endpoints: integration/sdk.md
       - Offline Token Verification: integration/offline-tokens.md
+      - Air-gapped Licensing: integration/air-gapped.md
       - Software Updates: integration/updates.md
   - Billing:
       - Stripe Integration: billing/stripe.md
