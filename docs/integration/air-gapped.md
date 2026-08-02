@@ -78,6 +78,28 @@ Offline licensing gives up things the online flow provides. These are inherent, 
 - **Clock rollback** defeats a bounded `expires_at` (the user can set the system clock back). It does **not** affect perpetual tokens, since there's no expiry to bypass. For bounded tokens, optionally have the client persist a monotonic "last seen" timestamp and refuse if the clock jumps backward.
 - **`max_activations` isn't enforced** offline — there's no server to count against. Control it by issuing exactly one file per machine code.
 
+## Revocation and the reconnect gap
+
+A common question: what happens when a device that's normally offline *does* get connected, and meanwhile the license was revoked or the machine was "moved" (its activation cleared and re-issued elsewhere)?
+
+The answer depends entirely on whether your app re-checks with the server — the license file itself can't know anything changed.
+
+**The file alone: nothing changes.** The `.lic` token is verified locally against the embedded public key (signature, `exp`, `fpr`). The server can't reach an offline machine, and a perpetual token never expires, so a server-side revoke or move has **no effect** while the app only trusts its local file. This is the inherent "no offline revocation" trade-off.
+
+**If the device reconnects *and* the app re-verifies online**, the server state applies. On that `verify` call:
+
+- **License revoked / suspended / expired** → the license is no longer usable → the endpoint returns **`404 LICENSE_NOT_FOUND`**.
+- **Activation moved** (an admin cleared the offline activation and the customer activated a different machine) → this device's identifier no longer has an activation → also **`404`**.
+
+Both collapse to the **same uniform 404** by design (so the endpoint can't be used to probe which keys are real). Your client can't distinguish "revoked" from "moved" from "never existed" — it just learns **"not licensed anymore"** and decides what to do: fall back to unlicensed, prompt re-activation, or run on a short grace window (`grc`).
+
+Because self-service offline activations are **recorded server-side**, a move is visible on reconnect — the old machine's `verify` cleanly fails. Admin-issued perpetual tokens don't record an activation, so only a license-level revoke/suspend shows up, not a device move.
+
+**Design implications:**
+
+- **Have the client re-verify opportunistically** whenever it has connectivity, and treat a `404` as a lapse. That is the *only* way a revoke or move ever reaches a rarely-online machine.
+- **If remote revocation must actually take effect, don't issue perpetual.** Use a bounded `expires_at` so the file forces a re-check every TTL; a revoked or moved license then stops working at most one TTL after the device next connects — even if it was offline in between. Perpetual buys convenience; bounded buys enforceability. You can't have both.
+
 ## Support renewal for air-gapped installs
 
 Perpetual + paid support works here too, mapping cleanly onto [perpetual fallback](../concepts/support-window.md): the file the customer holds keeps the software running forever, while the support window (`sup`) gates newer releases. To renew, issue a **new** offline token with a later `expires_at` / refreshed support window and send the updated `.lic` file — the sneakernet equivalent of a support renewal.
