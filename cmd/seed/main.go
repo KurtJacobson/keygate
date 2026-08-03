@@ -1,8 +1,11 @@
-// Command seed populates a local/dev database with demo data: two
-// products (a desktop app and a SaaS app), plans with entitlements
-// covering every value type (bool / int / string / quota), and a few
-// licenses in different states. Safe to run repeatedly — it detects its
-// own seed data by slug and exits early if already present.
+// Command seed populates a local/dev database with demo data: three
+// products (a desktop app, a SaaS app, and a hybrid toolkit), plans with
+// entitlements covering every value type (bool / int / string / quota),
+// and licenses across every lifecycle status, plus a few device
+// activations. Names are deliberately generic ("Acme …") sample data.
+//
+// Safe to run repeatedly — it detects its own seed data by slug and
+// exits early if already present.
 //
 // Usage:
 //
@@ -20,7 +23,16 @@ import (
 	"github.com/tabloy/keygate/internal/store"
 )
 
-const seedProductSlug = "inventor-dxf"
+const seedProductSlug = "acme-desktop"
+const day = 24 * time.Hour
+
+var (
+	db  *store.Store
+	ctx = context.Background()
+	// planBySlug maps a plan slug to the created plan (carrying its
+	// product id) so licenses can reference plans by a readable key.
+	planBySlug = map[string]*model.Plan{}
+)
 
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
@@ -28,15 +40,15 @@ func main() {
 		dsn = "postgres://keygate:keygate@localhost:5432/keygate?sslmode=disable"
 	}
 
-	db, err := store.New(dsn)
+	var err error
+	db, err = store.New(dsn)
 	if err != nil {
 		log.Fatalf("connect: %v", err)
 	}
 	defer db.Close()
-	ctx := context.Background()
 
-	// Idempotent — skips already-applied migrations. Lets `make seed`
-	// work against a fresh DB without first starting the server.
+	// Idempotent — skips already-applied migrations so `make seed` works
+	// against a fresh DB without first starting the server.
 	if err := db.RunMigrations("db/migrations"); err != nil {
 		log.Fatalf("migrations: %v", err)
 	}
@@ -51,88 +63,135 @@ func main() {
 		return
 	}
 
-	// ─── Product 1: desktop app with perpetual + subscription plans ───
-	desktop := &model.Product{Name: "Inventor DXF FlatExport", Slug: seedProductSlug, Type: "desktop"}
-	must("product", db.CreateProduct(ctx, desktop))
+	// ─── Products ───
+	desktop := product("Acme Desktop", seedProductSlug, "desktop")
+	cloud := product("Acme Cloud", "acme-cloud", "saas")
+	toolkit := product("Acme Toolkit", "acme-toolkit", "hybrid")
 
-	free := &model.Plan{
-		ProductID: desktop.ID, Name: "Free", Slug: "free",
-		LicenseType: "perpetual", LicenseModel: "standard", MaxActivations: 1,
+	// ─── Desktop plans (perpetual + subscription) ───
+	plan(desktop, planSpec{name: "Free", slug: "desktop-free", licenseType: "perpetual", maxAct: 1, ents: []ent{
+		{"editor", "bool", "true", "", ""},
+		{"daily_exports", "quota", "20", "daily", "exports"},
+	}})
+	plan(desktop, planSpec{name: "Pro", slug: "desktop-pro", licenseType: "subscription", maxAct: 3, grace: 7, support: 365, billing: "month", ents: []ent{
+		{"editor", "bool", "true", "", ""},
+		{"batch_export", "bool", "true", "", ""},
+		{"max_projects", "int", "50", "", ""},
+		{"tier", "string", "pro", "", ""},
+		{"exports", "quota", "0", "monthly", "exports"}, // 0 = unlimited
+	}})
+	plan(desktop, planSpec{name: "Studio", slug: "desktop-studio", licenseType: "perpetual", maxAct: 5, support: 365, ents: []ent{
+		{"editor", "bool", "true", "", ""},
+		{"batch_export", "bool", "true", "", ""},
+		{"priority_support", "bool", "true", "", ""},
+		{"max_projects", "int", "500", "", ""},
+	}})
+
+	// ─── Cloud plans (SaaS, seat-based) ───
+	plan(cloud, planSpec{name: "Starter", slug: "cloud-starter", licenseType: "subscription", maxSeats: 3, grace: 7, billing: "month", ents: []ent{
+		{"projects", "int", "5", "", ""},
+		{"api_calls", "quota", "10000", "monthly", "requests"},
+	}})
+	plan(cloud, planSpec{name: "Team", slug: "cloud-team", licenseType: "subscription", maxSeats: 10, grace: 7, billing: "month", ents: []ent{
+		{"sso", "bool", "true", "", ""},
+		{"projects", "int", "50", "", ""},
+		{"api_calls", "quota", "100000", "monthly", "requests"},
+	}})
+	plan(cloud, planSpec{name: "Business", slug: "cloud-business", licenseType: "subscription", maxSeats: 50, grace: 14, billing: "month", ents: []ent{
+		{"sso", "bool", "true", "", ""},
+		{"audit_log", "bool", "true", "", ""},
+		{"api_calls", "quota", "1000000", "monthly", "requests"},
+	}})
+
+	// ─── Toolkit plan (hybrid: activations + seats) ───
+	plan(toolkit, planSpec{name: "Standard", slug: "toolkit-standard", licenseType: "subscription", maxAct: 2, maxSeats: 5, grace: 7, billing: "month", ents: []ent{
+		{"plugins", "int", "10", "", ""},
+		{"api_calls", "quota", "50000", "monthly", "requests"},
+	}})
+
+	// ─── Licenses across every lifecycle status ───
+	yr := plus(365 * day)
+	mo := plus(30 * day)
+	trial := plus(14 * day)
+	for _, l := range []licSpec{
+		{"desktop-pro", "alice@example.com", "DEMO-PRO-0001", "active", yr, yr, []string{"MBP-alice", "iMac-studio"}},
+		{"desktop-free", "bob@example.com", "DEMO-FREE-0001", "active", nil, nil, []string{"thinkpad-bob"}},
+		{"desktop-pro", "carol@example.com", "DEMO-TRIAL-0001", "trialing", trial, nil, nil},
+		{"desktop-studio", "dave@example.com", "DEMO-STUDIO-0001", "active", nil, yr, []string{"workstation-dave"}},
+		{"desktop-pro", "erin@example.com", "DEMO-SUSPENDED-01", "suspended", yr, yr, nil},
+		{"desktop-pro", "frank@example.com", "DEMO-EXPIRED-0001", "expired", plus(-30 * day), plus(-30 * day), nil},
+		{"cloud-starter", "grace@example.com", "DEMO-STARTER-0001", "active", yr, nil, nil},
+		{"cloud-team", "heidi@example.com", "DEMO-TEAM-0001", "active", yr, nil, nil},
+		{"cloud-team", "ivan@example.com", "DEMO-TRIAL-CLOUD1", "trialing", trial, nil, nil},
+		{"cloud-team", "judy@example.com", "DEMO-PASTDUE-0001", "past_due", plus(-2 * day), nil, nil},
+		{"cloud-business", "ken@example.com", "DEMO-BUSINESS-001", "active", yr, nil, nil},
+		{"cloud-starter", "laura@example.com", "DEMO-CANCELED-001", "canceled", mo, nil, nil},
+		{"toolkit-standard", "mike@example.com", "DEMO-TOOLKIT-0001", "active", yr, nil, []string{"ci-runner-1"}},
+		{"toolkit-standard", "nina@example.com", "DEMO-REVOKED-0001", "revoked", nil, nil, nil},
+	} {
+		license(l)
 	}
-	must("plan free", db.CreatePlan(ctx, free))
-	seedEntitlements(ctx, db, free.ID,
-		ent{"dxf_export", "bool", "true", "", ""},
-		ent{"daily_exports", "quota", "20", "daily", "exports"},
-	)
 
-	pro := &model.Plan{
-		ProductID: desktop.ID, Name: "Pro", Slug: "pro",
-		LicenseType: "subscription", LicenseModel: "standard", MaxActivations: 3,
-		GraceDays: 7, SupportDays: 365, BillingInterval: "month",
-	}
-	must("plan pro", db.CreatePlan(ctx, pro))
-	seedEntitlements(ctx, db, pro.ID,
-		ent{"dxf_export", "bool", "true", "", ""},
-		ent{"batch_export", "bool", "true", "", ""},
-		ent{"max_parts", "int", "1000", "", ""},
-		ent{"tier", "string", "pro", "", ""},
-		ent{"api_calls", "quota", "0", "monthly", "requests"}, // 0 = unlimited
-	)
-
-	// ─── Product 2: SaaS app with a team plan ───
-	saas := &model.Product{Name: "Acme Cloud", Slug: "acme-cloud", Type: "saas"}
-	must("product saas", db.CreateProduct(ctx, saas))
-
-	team := &model.Plan{
-		ProductID: saas.ID, Name: "Team", Slug: "team",
-		LicenseType: "subscription", LicenseModel: "standard", MaxSeats: 5,
-		GraceDays: 7, BillingInterval: "month",
-	}
-	must("plan team", db.CreatePlan(ctx, team))
-	seedEntitlements(ctx, db, team.ID,
-		ent{"sso", "bool", "true", "", ""},
-		ent{"api_calls", "quota", "100000", "monthly", "requests"},
-	)
-
-	// ─── Licenses in a few states ───
-	now := time.Now()
-	inAYear := now.AddDate(1, 0, 0)
-	trialEnd := now.AddDate(0, 0, 14)
-	seedLicense(ctx, db, &model.License{
-		ProductID: desktop.ID, PlanID: pro.ID, Email: "demo-pro@example.com",
-		LicenseKey: "DEMO-PRO-0001", Status: "active", ValidUntil: &inAYear, SupportUntil: &inAYear,
-	})
-	seedLicense(ctx, db, &model.License{
-		ProductID: desktop.ID, PlanID: free.ID, Email: "demo-free@example.com",
-		LicenseKey: "DEMO-FREE-0001", Status: "active",
-	})
-	seedLicense(ctx, db, &model.License{
-		ProductID: desktop.ID, PlanID: pro.ID, Email: "demo-trial@example.com",
-		LicenseKey: "DEMO-TRIAL-0001", Status: "trialing", ValidUntil: &trialEnd,
-	})
-	seedLicense(ctx, db, &model.License{
-		ProductID: saas.ID, PlanID: team.ID, Email: "demo-team@example.com",
-		LicenseKey: "DEMO-TEAM-0001", Status: "active", ValidUntil: &inAYear,
-	})
-
-	log.Printf("seeded: 2 products, 3 plans, 4 licenses (keys DEMO-PRO-0001 / DEMO-FREE-0001 / DEMO-TRIAL-0001 / DEMO-TEAM-0001)")
+	log.Printf("seeded: 3 products, %d plans, 14 licenses across all statuses (keys prefixed DEMO-)", len(planBySlug))
 }
 
-type ent struct {
-	feature, valueType, value, quotaPeriod, quotaUnit string
+// ─── helpers ───
+
+func plus(d time.Duration) *time.Time { t := time.Now().Add(d); return &t }
+
+func product(name, slug, typ string) *model.Product {
+	p := &model.Product{Name: name, Slug: slug, Type: typ}
+	must("product "+slug, db.CreateProduct(ctx, p))
+	return p
 }
 
-func seedEntitlements(ctx context.Context, db *store.Store, planID string, ents ...ent) {
-	for _, e := range ents {
-		must("entitlement "+e.feature, db.CreateEntitlement(ctx, &model.Entitlement{
-			PlanID: planID, Feature: e.feature, ValueType: e.valueType, Value: e.value,
+type ent struct{ feature, valueType, value, quotaPeriod, quotaUnit string }
+
+type planSpec struct {
+	name, slug, licenseType, billing string
+	maxAct, maxSeats, grace, support int
+	ents                             []ent
+}
+
+func plan(p *model.Product, s planSpec) {
+	pl := &model.Plan{
+		ProductID: p.ID, Name: s.name, Slug: s.slug,
+		LicenseType: s.licenseType, LicenseModel: "standard",
+		MaxActivations: s.maxAct, MaxSeats: s.maxSeats,
+		GraceDays: s.grace, SupportDays: s.support, BillingInterval: s.billing,
+	}
+	must("plan "+s.slug, db.CreatePlan(ctx, pl))
+	for _, e := range s.ents {
+		must("entitlement "+s.slug+"/"+e.feature, db.CreateEntitlement(ctx, &model.Entitlement{
+			PlanID: pl.ID, Feature: e.feature, ValueType: e.valueType, Value: e.value,
 			QuotaPeriod: e.quotaPeriod, QuotaUnit: e.quotaUnit,
 		}))
 	}
+	planBySlug[s.slug] = pl
 }
 
-func seedLicense(ctx context.Context, db *store.Store, l *model.License) {
-	must("license "+l.LicenseKey, db.CreateLicense(ctx, l))
+type licSpec struct {
+	planSlug, email, key, status string
+	validUntil, supportUntil     *time.Time
+	activations                  []string
+}
+
+func license(s licSpec) {
+	pl := planBySlug[s.planSlug]
+	if pl == nil {
+		log.Fatalf("seed license %s: unknown plan %q", s.key, s.planSlug)
+	}
+	lic := &model.License{
+		ProductID: pl.ProductID, PlanID: pl.ID, Email: s.email,
+		LicenseKey: s.key, Status: s.status,
+		ValidUntil: s.validUntil, SupportUntil: s.supportUntil,
+	}
+	must("license "+s.key, db.CreateLicense(ctx, lic))
+	for _, id := range s.activations {
+		must("activation "+id, db.CreateActivation(ctx, &model.Activation{
+			LicenseID: lic.ID, Identifier: id, IdentifierType: "device", Label: id,
+		}))
+	}
 }
 
 func must(what string, err error) {
