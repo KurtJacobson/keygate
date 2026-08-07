@@ -1,23 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
-  <defs>
-    <linearGradient id="shield" x1="64" y1="8" x2="64" y2="120" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#8b5cf6"/>
-      <stop offset="1" stop-color="#6d28d9"/>
-    </linearGradient>
-    <linearGradient id="shieldLight" x1="16" y1="28" x2="64" y2="120" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#a78bfa"/>
-      <stop offset="1" stop-color="#7c3aed"/>
-    </linearGradient>
-  </defs>
-  <!-- Shield body -->
-  <path d="M64 8L16 28v36c0 30.92 20.48 59.84 48 68 27.52-8.16 48-37.08 48-68V28L64 8z" fill="url(#shield)"/>
-  <!-- Shield left highlight -->
-  <path d="M64 8L16 28v36c0 30.92 20.48 59.84 48 68V8z" fill="url(#shieldLight)"/>
-  <!-- Key ring -->
-  <circle cx="64" cy="52" r="14" fill="none" stroke="white" stroke-width="7" stroke-linecap="round"/>
-  <!-- Key shaft -->
-  <rect x="60" y="64" width="8" height="32" rx="4" fill="white"/>
-  <!-- Key teeth -->
-  <rect x="68" y="80" width="12" height="7" rx="3.5" fill="white"/>
-  <rect x="68" y="89" width="8" height="7" rx="3.5" fill="white"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-110 -110 220 220" role="img" aria-label="Vordkey">
+  <g fill="none" stroke="#3f4753" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="0" cy="0" r="60"/>
+    <ellipse cx="0" cy="-38" rx="32" ry="62"/>
+    <ellipse cx="0" cy="-38" rx="32" ry="62" transform="rotate(120)"/>
+    <ellipse cx="0" cy="-38" rx="32" ry="62" transform="rotate(240)"/>
+  </g>
+  <circle cx="0" cy="-2" r="12" fill="#3f4753"/>
+  <path d="M-7 5 L7 5 L4 30 L-4 30 Z" fill="#3f4753"/>
 </svg>

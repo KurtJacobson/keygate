@@ -2098,7 +2098,7 @@ func (h *AdminHandler) InviteTeamMember(c *gin.Context) {
 	if roleChanged && h.Email != nil && h.Email.IsConfigured() {
 		siteName, _ := h.Store.GetSetting(c, "site_name")
 		if siteName == "" {
-			siteName = "Keygate"
+			siteName = "Vordkey"
 		}
 		baseURL, _ := h.Store.GetSetting(c, "base_url")
 		if baseURL == "" {

@@ -14,7 +14,7 @@ interface SiteConfig {
 }
 
 const defaults: SiteConfig = {
-  site_name: "Keygate",
+  site_name: "Vordkey",
   brand_color: "",
   logo_url: "",
   favicon_url: "",
@@ -35,7 +35,7 @@ export function SiteConfigProvider({ children }: { children: ReactNode }) {
       .config()
       .then((data) => {
         setConfig({
-          site_name: data.site_name || "Keygate",
+          site_name: data.site_name || "Vordkey",
           brand_color: data.brand_color || "",
           logo_url: data.logo_url || "",
           favicon_url: data.favicon_url || "",

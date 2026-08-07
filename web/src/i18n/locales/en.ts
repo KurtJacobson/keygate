@@ -70,7 +70,7 @@ const en = {
   "dashboard.subtitle": "Overview of your license management system.",
   "dashboard.statusDistribution": "License Status Distribution",
   "dashboard.recentLicenses": "Recent Licenses",
-  "dashboard.updateAvailable": "Keygate {version} is available.",
+  "dashboard.updateAvailable": "Vordkey {version} is available.",
   "dashboard.viewUpdate": "View Details",
   "dashboard.releaseNotes": "Release Notes",
 
@@ -360,7 +360,7 @@ const en = {
   "settings.brandColor": "Brand Color",
   "settings.brandColorDesc": "Primary color used throughout the interface. Leave empty for default.",
   "settings.logoUrl": "Custom Logo URL",
-  "settings.logoUrlDesc": "URL to your logo (SVG recommended). Leave empty for default Keygate logo.",
+  "settings.logoUrlDesc": "URL to your logo (SVG recommended). Leave empty for default Vordkey logo.",
   "settings.faviconUrl": "Favicon URL",
   "settings.faviconUrlDesc": "URL to the browser-tab icon. Leave empty to use the logo above.",
   "settings.smtpHost": "SMTP Host",

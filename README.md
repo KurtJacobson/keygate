@@ -1,8 +1,10 @@
-# Keygate
+# Vordkey
 
-**Open source, self-hosted software license management.**
+**Self-hosted software license management.**
 
 A single Go binary + PostgreSQL that handles license keys, activation, payments, usage metering, and signed auto-updates — the self-hosted alternative to Keygen, Cryptlex, and LicenseSpring.
+
+Vordkey is built on [Keygate](https://github.com/kurtjacobson/keygate) (AGPL v3).
 
 [![License](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/kurtjacobson/keygate?label=release&color=green)](https://github.com/kurtjacobson/keygate/releases)

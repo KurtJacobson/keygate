@@ -69,7 +69,7 @@ const zh = {
   "dashboard.subtitle": "许可证管理系统概览。",
   "dashboard.statusDistribution": "许可证状态分布",
   "dashboard.recentLicenses": "最近许可证",
-  "dashboard.updateAvailable": "Keygate {version} 新版本可用。",
+  "dashboard.updateAvailable": "Vordkey {version} 新版本可用。",
   "dashboard.viewUpdate": "查看详情",
   "dashboard.releaseNotes": "更新日志",
 
@@ -349,7 +349,7 @@ const zh = {
   "settings.brandColor": "品牌颜色",
   "settings.brandColorDesc": "整个界面使用的主色调。留空则使用默认紫色。",
   "settings.logoUrl": "自定义 Logo URL",
-  "settings.logoUrlDesc": "Logo 图片的 URL（推荐 SVG 格式）。留空则使用默认 Keygate Logo。",
+  "settings.logoUrlDesc": "Logo 图片的 URL（推荐 SVG 格式）。留空则使用默认 Vordkey Logo。",
   "settings.faviconUrl": "网站图标 URL",
   "settings.faviconUrlDesc": "浏览器标签页图标的 URL。留空则使用上方的 Logo。",
   "settings.smtpHost": "SMTP 服务器",
