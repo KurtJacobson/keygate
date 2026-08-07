@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: Keygate API
+  title: Vordkey API
   description: |
     License management API for software products.
 
@@ -14,7 +14,7 @@ info:
     signature on each artifact, not from URL secrecy.
 
     For **server-to-server admin access** (CI/CD, billing backends,
-    automation scripts) Keygate provides API keys with the `admin`
+    automation scripts) Vordkey provides API keys with the `admin`
     scope. Pass them as `Authorization: Bearer kg_live_…`. They are
     equivalent to a logged-in admin session and can call any
     `/admin/*` endpoint. Mint them in the admin dashboard under
@@ -54,7 +54,7 @@ info:
     state via email + the portal, not via these endpoints.
   version: 1.1.0
   contact:
-    name: Keygate
+    name: Vordkey
     url: https://keygate.app
   license:
     name: AGPL v3
@@ -65,7 +65,7 @@ servers:
     variables:
       server:
         default: http://localhost:9000
-        description: Your Keygate server URL
+        description: Your Vordkey server URL
 
 # Public SDK endpoints have no auth at the route layer. Admin endpoints
 # (out of this doc) use BearerAuth or session cookies.

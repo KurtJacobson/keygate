@@ -79,7 +79,7 @@ const en = {
   "products.subtitle": "Manage your software products.",
   "products.new": "New Product",
   "products.slug": "Slug",
-  "products.empty": "No products yet",
+  "products.empty": "No products yet — even Heimdall had to raise the bridge first.",
   "products.deleteConfirm": "This action cannot be undone. Products with existing licenses cannot be deleted.",
   "products.createTitle": "Create Product",
   "products.editTitle": "Edit Product",
@@ -156,7 +156,7 @@ const en = {
   "licenses.offlineFingerprint": "Fingerprint",
   "licenses.offlinePerpetual": "Perpetual",
   "licenses.offlineDownload": "Download .lic",
-  "licenses.empty": "No licenses found",
+  "licenses.empty": "No licenses found — the vault stands empty, warden.",
   "licenses.noProducts": "No products yet",
   "licenses.noProductsDesc": "Create a product and plan first before issuing licenses.",
   "licenses.detail": "License Detail",
@@ -414,7 +414,7 @@ const en = {
   "pagination.rows": "Rows",
 
   // Login
-  "login.subtitle": "Sign in to your account",
+  "login.subtitle": "Speak, and the warden shall let you pass.",
   "login.signInWith": "Sign in with {provider}",
   "login.signingIn": "Signing in...",
   "login.devLogin": "Dev Login",

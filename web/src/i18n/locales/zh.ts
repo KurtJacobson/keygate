@@ -78,7 +78,7 @@ const zh = {
   "products.subtitle": "管理您的软件产品。",
   "products.new": "新建产品",
   "products.slug": "标识符",
-  "products.empty": "暂无产品",
+  "products.empty": "暂无产品 —— 海姆达尔也得先架起彩虹桥。",
   "products.deleteConfirm": "此操作不可撤销。已有许可证的产品无法删除。",
   "products.createTitle": "创建产品",
   "products.editTitle": "编辑产品",
@@ -151,7 +151,7 @@ const zh = {
   "licenses.offlineFingerprint": "指纹",
   "licenses.offlinePerpetual": "永久",
   "licenses.offlineDownload": "下载 .lic",
-  "licenses.empty": "未找到许可证",
+  "licenses.empty": "未找到许可证 —— 金库空空，守卫。",
   "licenses.noProducts": "暂无产品",
   "licenses.noProductsDesc": "请先创建产品和方案，然后再签发许可证。",
   "licenses.detail": "许可证详情",
@@ -402,7 +402,7 @@ const zh = {
   "pagination.rows": "每页",
 
   // Login
-  "login.subtitle": "登录您的账户",
+  "login.subtitle": "报上名来，守卫便放你通行。",
   "login.signInWith": "使用 {provider} 登录",
   "login.signingIn": "登录中...",
   "login.devLogin": "开发登录",
