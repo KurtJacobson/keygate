@@ -1,7 +1,7 @@
 import { MutationCache, QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom"
+import { BrowserRouter, Route, Routes } from "react-router-dom"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { AdminLayout, PortalLayout } from "@/components/layout"
 import { showToast, ToastBridge, ToastProvider } from "@/components/toast"
@@ -23,6 +23,7 @@ import SettingsPage from "@/pages/admin/settings"
 import WebhooksPage from "@/pages/admin/webhooks"
 import CheckoutSuccessPage from "@/pages/checkout-success"
 import LoginPage from "@/pages/login"
+import NotFoundPage from "@/pages/not-found"
 import PortalAccountPage from "@/pages/portal/account"
 import PortalLicensesPage from "@/pages/portal/licenses"
 import "./index.css"
@@ -75,7 +76,7 @@ createRoot(document.getElementById("root")!).render(
                       <Route path="account" element={<PortalAccountPage />} />
                     </Route>
 
-                    <Route path="*" element={<Navigate to="/login" replace />} />
+                    <Route path="*" element={<NotFoundPage />} />
                   </Routes>
                 </ErrorBoundary>
               </AuthProvider>

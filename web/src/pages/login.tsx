@@ -219,6 +219,7 @@ export default function LoginPage() {
           )}
         </CardContent>
       </Card>
+      <p className="mt-4 text-xs italic text-muted-foreground/60">{t("login.flavor")}</p>
       {/* Attribution required by AGPL v3 Section 7(b) — see NOTICE */}
       <a
         href={attribution_url}

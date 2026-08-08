@@ -415,6 +415,10 @@ const en = {
 
   // Login
   "login.subtitle": "Speak, and the warden shall let you pass.",
+  "login.flavor": "Take up the watch.",
+  "notFound.title": "Page not found",
+  "notFound.desc": "This path leads nowhere — not even Bifröst reaches here.",
+  "notFound.back": "Back to safety",
   "login.signInWith": "Sign in with {provider}",
   "login.signingIn": "Signing in...",
   "login.devLogin": "Dev Login",

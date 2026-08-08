@@ -403,6 +403,10 @@ const zh = {
 
   // Login
   "login.subtitle": "报上名来，守卫便放你通行。",
+  "login.flavor": "接过守望之责。",
+  "notFound.title": "页面未找到",
+  "notFound.desc": "此路不通 —— 连彩虹桥也到不了这里。",
+  "notFound.back": "返回安全之地",
   "login.signInWith": "使用 {provider} 登录",
   "login.signingIn": "登录中...",
   "login.devLogin": "开发登录",
